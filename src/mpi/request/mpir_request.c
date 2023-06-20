@@ -20,6 +20,9 @@ static void init_builtin_request(MPIR_Request * req, int handle, MPIR_Request_ki
     req->status.MPI_ERROR = MPI_SUCCESS;
     MPIR_STATUS_SET_CANCEL_BIT(req->status, FALSE);
     req->comm = NULL;
+    MPIR_Request_cb_init(req);
+    // built-in request are in the completed state
+    req->cbs_invoked = true;
 }
 
 void MPII_init_request(void)
@@ -195,6 +198,15 @@ int MPIR_Request_completion_processing(MPIR_Request * request_ptr, MPI_Status * 
                 mpi_errno = request_ptr->status.MPI_ERROR;
                 break;
             }
+
+        case MPIR_REQUEST_KIND__CONTINUE:
+        {
+            MPIR_Cont_request_inactivate(request_ptr);
+
+            MPIR_Request_extract_status(request_ptr, status);
+            mpi_errno = request_ptr->status.MPI_ERROR;
+            break;
+        }
 
         case MPIR_REQUEST_KIND__GREQUEST:
             {

@@ -53,6 +53,7 @@ int MPID_Startall(int count, MPIR_Request * requests[])
     for (i = 0; i < count; i++)
     {
 	MPIR_Request * const preq = requests[i];
+        MPIR_Request_start(preq);
 
         /* continue if the source/dest is MPI_PROC_NULL */
         if (preq->dev.match.parts.rank == MPI_PROC_NULL)
@@ -63,6 +64,13 @@ int MPID_Startall(int count, MPIR_Request * requests[])
             MPIR_ERR_CHECK(mpi_errno);
             continue;
         }
+
+        if (preq->kind == MPIR_REQUEST_KIND__CONTINUE) {
+            mpi_errno = MPIR_Continue_start(preq);
+            MPIR_ERR_CHECK(mpi_errno);
+            continue;
+        }
+
 
 	/* FIXME: The odd 7th arg (match.context_id - comm->context_id) 
 	   is probably to get the context offset.  Do we really need the
