@@ -70,6 +70,7 @@ typedef enum MPIR_Request_kind_t {
     MPIR_REQUEST_KIND__COLL,
     MPIR_REQUEST_KIND__MPROBE,  /* see NOTE-R1 */
     MPIR_REQUEST_KIND__RMA,
+    MPIR_REQUEST_KIND__CONTINUE,
     MPIR_REQUEST_KIND__LAST
 #ifdef MPID_REQUEST_KIND_DECL
         , MPID_REQUEST_KIND_DECL
@@ -93,6 +94,12 @@ typedef enum MPIR_Request_kind_t {
 typedef void (MPIR_Grequest_f77_cancel_function) (void *, MPI_Fint *, MPI_Fint *);
 typedef void (MPIR_Grequest_f77_free_function) (void *, MPI_Fint *);
 typedef void (MPIR_Grequest_f77_query_function) (void *, MPI_Fint *, MPI_Fint *);
+
+/* Typedefs for request callback */
+typedef void (MPIR_Request_callback_function) (MPIR_Request *);
+#define MPIR_REQUEST_CALLBACK_NULL 0
+#define MPIR_REQUEST_CALLBACK_SET 1
+#define MPIR_REQUEST_CALLBACK_DONE 2
 
 /* vtable-ish structure holding generalized request function pointers and other
  * state.  Saves ~48 bytes in pt2pt requests on many platforms. */
@@ -207,6 +214,10 @@ struct MPIR_Request {
     MPIR_Comm *comm;
     /* Status is needed for wait/test/recv */
     MPI_Status status;
+    /* Callback */
+    MPL_atomic_int_t cb_state;
+    MPIR_Request_callback_function *cb;
+    void *cb_context;
 
     union {
         struct {
@@ -434,6 +445,10 @@ static inline MPIR_Request *MPIR_Request_create_from_pool(MPIR_Request_kind_t ki
 
     req->comm = NULL;
 
+    req->cb = NULL;
+    req->cb_context = NULL;
+    MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL);
+
     switch (kind) {
         case MPIR_REQUEST_KIND__COLL:
             req->u.nbc.errflag = MPIR_ERR_NONE;
@@ -507,6 +522,8 @@ MPL_STATIC_INLINE_PREFIX MPIR_Request *MPIR_Request_create_null_recv(void)
     return get_builtin_req(HANDLE_INDEX(MPIR_REQUEST_NULL_RECV), MPIR_REQUEST_KIND__RECV);
 }
 
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_unsafe(MPIR_Request * req);
+
 static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_safety)
 {
     int inuse;
@@ -528,6 +545,7 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
     /* inform the device that we are decrementing the ref-count on
      * this request */
     MPID_Request_free_hook(req);
+    MPIR_Invoke_callback_unsafe(req);
 
     if (inuse == 0) {
         MPL_DBG_MSG_P(MPIR_DBG_REQUEST, VERBOSE, "freeing request, handle=0x%08x", req->handle);
@@ -592,6 +610,69 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Request_free(MPIR_Request * req)
 {
     /* The default is to assume we need safety unless it's global thread granularity */
     MPIR_Request_free_with_safety(req, 1);
+}
+
+MPL_STATIC_INLINE_PREFIX bool MPIR_Set_callback_unsafe(MPIR_Request * req,
+                                                       MPIR_Request_callback_function *cb,
+                                                       void *cb_context)
+{
+    if (req->cb == NULL) {
+        req->cb = cb;
+        req->cb_context = cb_context;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+MPL_STATIC_INLINE_PREFIX bool MPIR_Set_callback_safe(MPIR_Request * req,
+                                                     MPIR_Request_callback_function *cb,
+                                                     void *cb_context)
+{
+    int local_state = MPL_atomic_relaxed_load_int(&req->cb_state);
+    if (local_state == MPIR_REQUEST_CALLBACK_DONE) {
+        return false;
+    } else {
+        MPIR_Assert(local_state == MPIR_REQUEST_CALLBACK_NULL);
+        int oldval = MPL_atomic_cas_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL, MPIR_REQUEST_CALLBACK_SET);
+        if (oldval == MPIR_REQUEST_CALLBACK_NULL) {
+            bool ret = MPIR_Set_callback_unsafe(req, cb, cb_context);
+            MPIR_Assert(ret);
+            return true;
+        } else {
+            MPIR_Assert(oldval == MPIR_REQUEST_CALLBACK_DONE);
+            return false;
+        }
+    }
+}
+
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_unsafe(MPIR_Request * req)
+{
+    if (req->cb) {
+        req->cb(req);
+    }
+    /* This store maybe not necessary. */
+    MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_DONE);
+}
+
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_safe(MPIR_Request * req)
+{
+    bool safe_to_call = false;
+    int local_state = MPL_atomic_relaxed_load_int(&req->cb_state);
+    if (local_state == MPIR_REQUEST_CALLBACK_SET) {
+        safe_to_call = true;
+    } else {
+        MPIR_Assert(local_state == MPIR_REQUEST_CALLBACK_NULL);
+        int oldval = MPL_atomic_cas_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL, MPIR_REQUEST_CALLBACK_DONE);
+        if (oldval == MPIR_REQUEST_CALLBACK_SET) {
+            safe_to_call = true;
+        } else {
+            MPIR_Assert(oldval == MPIR_REQUEST_CALLBACK_NULL);
+        }
+    }
+    if (safe_to_call) {
+        MPIR_Invoke_callback_unsafe(req);
+    }
 }
 
 /* Requests that are not created inside device (general requests, nonblocking collective

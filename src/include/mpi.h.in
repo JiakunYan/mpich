@@ -777,6 +777,10 @@ typedef int (MPI_Datarep_extent_function)(MPI_Datatype datatype, MPI_Aint *,
 typedef int (MPI_Datarep_conversion_function_c)(void *, MPI_Datatype, MPI_Count,
              void *, MPI_Offset, void *);
 
+/* Typedefs for continuation callback */
+typedef void (MPIX_Continue_cb_function)(MPI_Status *statuses, void *cb_data);
+typedef void (MPIX_Continue_cb_function_c)(MPI_Status *statuses, void *cb_data);
+
 /* Make the C names for the dup function mixed case.
    This is required for systems that use all uppercase names for Fortran
    externals.  */

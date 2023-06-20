@@ -1,0 +1,30 @@
+# vim: set ft=c:
+
+MPIX_Continue_cb_function:
+    .return: NOTHING
+    statuses: STATUS, pointer=True
+    cb_data: BUFFER
+
+MPIX_Continue_init:
+    .desc: Create a continuation request using the provided info controls
+    cont_req: REQUEST, direction=out, [continuation request created]
+    info: INFO, [info argument]
+
+MPIX_Continue:
+    .desc: Attach a continuation to an active operation
+    op_request: REQUEST, direction=inout, [the request associated with the active operation]
+    flag: LOGICAL, direction=out, [flag indicating whether the operation has completed]
+    cb: POLYFUNCTION, func_type=MPIX_Continue_cb_function, [the continuation callback function]
+    cb_data: BUFFER, [the argument passed to the callback]
+    status: STATUS, [the status passed to the callback]
+    cont_request: REQUEST, [the continuation request]
+
+MPIX_Continueall:
+    .desc: Attach a continuation to multiple active operations
+    count: ARRAY_LENGTH_NNI, [lists length]
+    op_requests: REQUEST, direction=inout, length=count, [array of requests]
+    flag: LOGICAL, direction=out, [flag indicating whether the operation has completed]
+    cb: POLYFUNCTION, func_type=MPIX_Continue_cb_function, [the continuation callback function]
+    cb_data: BUFFER, [the argument passed to the callback]
+    statuses: STATUS, direction=in, [array of status objects]
+    cont_request: REQUEST, [the continuation request]
