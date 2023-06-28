@@ -168,7 +168,7 @@ int MPIR_Request_free_impl(MPIR_Request * request_ptr)
         case MPIR_REQUEST_KIND__PART_RECV:
             MPID_Part_request_free_hook(request_ptr);
             break;
-        case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+        case MPIR_REQUEST_KIND__CONTINUE:
             break;
         default:
             mpi_errno = MPIR_Err_create_code(MPI_SUCCESS, MPIR_ERR_RECOVERABLE,
@@ -282,6 +282,7 @@ int MPIR_Test_state(MPIR_Request * request_ptr, int *flag, MPI_Status * status,
 
     mpi_errno = MPID_Progress_test(state);
     MPIR_ERR_CHECK(mpi_errno);
+    MPIR_Continue_progress(request_ptr);
 
   fn_exit:
     return mpi_errno;
@@ -337,6 +338,8 @@ int MPIR_Testall_state(int count, MPIR_Request * request_ptrs[], int *flag,
                 MPIR_ERR_CHECK(mpi_errno);
             }
 
+            MPIR_Continue_progress(request_ptrs[i]);
+
             if (request_ptrs[i] == NULL || MPIR_Request_is_complete(request_ptrs[i])) {
                 n_completed++;
             } else {
@@ -349,6 +352,8 @@ int MPIR_Testall_state(int count, MPIR_Request * request_ptrs[], int *flag,
                 mpi_errno = MPID_Progress_test(state);
                 MPIR_ERR_CHECK(mpi_errno);
             }
+
+            MPIR_Continue_progress(request_ptrs[i]);
 
             if (request_ptrs[i] != NULL) {
                 if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
@@ -567,6 +572,8 @@ int MPIR_Testany_state(int count, MPIR_Request * request_ptrs[],
             MPIR_ERR_CHECK(mpi_errno);
         }
 
+        MPIR_Continue_progress(request_ptrs[i]);
+
         if (request_ptrs[i] != NULL && MPIR_Request_has_poll_fn(request_ptrs[i])) {
             mpi_errno = MPIR_Grequest_poll(request_ptrs[i], status);
             if (mpi_errno != MPI_SUCCESS)
@@ -704,6 +711,8 @@ int MPIR_Testsome_state(int incount, MPIR_Request * request_ptrs[],
             MPIR_ERR_CHECK(mpi_errno);
         }
 
+        MPIR_Continue_progress(request_ptrs[i]);
+
         if (request_ptrs[i] != NULL && MPIR_Request_has_poll_fn(request_ptrs[i])) {
             mpi_errno = MPIR_Grequest_poll(request_ptrs[i], &array_of_statuses[i]);
             if (mpi_errno != MPI_SUCCESS)
@@ -824,6 +833,8 @@ int MPIR_Wait_state(MPIR_Request * request_ptr, MPI_Status * status, MPID_Progre
         mpi_errno = MPID_Progress_wait(state);
         MPIR_ERR_CHECK(mpi_errno);
 
+        MPIR_Continue_progress(request_ptr);
+
         if (unlikely(MPIR_Request_is_anysrc_mismatched(request_ptr))) {
             mpi_errno = MPIR_Request_handle_proc_failed(request_ptr);
             goto fn_fail;
@@ -885,6 +896,8 @@ int MPIR_Waitall_state(int count, MPIR_Request * request_ptrs[], MPI_Status arra
             while (!MPIR_Request_is_complete(request_ptrs[i])) {
                 mpi_errno = MPID_Progress_wait(state);
                 MPIR_ERR_CHECK(mpi_errno);
+
+                MPIR_Continue_progress(request_ptrs[i]);
             }
         }
     } else {
@@ -899,6 +912,8 @@ int MPIR_Waitall_state(int count, MPIR_Request * request_ptrs[], MPI_Status arra
 
                 mpi_errno = MPID_Progress_wait(state);
                 MPIR_ERR_CHECK(mpi_errno);
+
+                MPIR_Continue_progress(request_ptrs[i]);
             }
         }
     }
@@ -1130,6 +1145,8 @@ int MPIR_Waitany_state(int count, MPIR_Request * request_ptrs[], int *indx, MPI_
             /* we found at least one non-null request */
             found_nonnull_req = TRUE;
 
+            MPIR_Continue_progress(request_ptrs[i]);
+
             if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
                 mpi_errno = MPIR_Grequest_poll(request_ptrs[i], status);
                 MPIR_ERR_CHECK(mpi_errno);
@@ -1281,6 +1298,8 @@ int MPIR_Waitsome_state(int incount, MPIR_Request * request_ptrs[],
             }
 
             if (request_ptrs[i] != NULL) {
+                MPIR_Continue_progress(request_ptrs[i]);
+
                 if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
                     mpi_errno = MPIR_Grequest_poll(request_ptrs[i], &array_of_statuses[i]);
                     MPIR_ERR_CHECK(mpi_errno);

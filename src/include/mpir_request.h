@@ -70,7 +70,7 @@ typedef enum MPIR_Request_kind_t {
     MPIR_REQUEST_KIND__COLL,
     MPIR_REQUEST_KIND__MPROBE,  /* see NOTE-R1 */
     MPIR_REQUEST_KIND__RMA,
-    MPIR_REQUEST_KIND__PREQUEST_CONTINUE,
+    MPIR_REQUEST_KIND__CONTINUE,
     MPIR_REQUEST_KIND__LAST
 #ifdef MPID_REQUEST_KIND_DECL
         , MPID_REQUEST_KIND_DECL
@@ -180,7 +180,11 @@ enum MPIR_sched_type {
     MPIR_SCHED_GENTRAN
 };
 
+/* Declaration for continue */
 struct MPIR_Continue_context;
+struct MPIR_Continue;
+int MPIR_Continue_start(MPIR_Request * request);
+void MPIR_Continue_progress(MPIR_Request *cont_request_ptr);
 
 /*S
   MPIR_Request - Description of the Request data structure
@@ -260,6 +264,11 @@ struct MPIR_Request {
             struct {
                 struct MPIR_Continue_context *head, *tail;
             } cont_context_on_hold_list;
+            bool is_pool_only;
+            int max_poll;
+            struct {
+                struct MPIR_Continue *head, *tail;
+            } ready_poll_only_cont_list;
         } cont;
         /* Reserve space for local usages. For example, threadcomm, the actual struct
          * is defined locally and is used via casting */
@@ -281,7 +290,6 @@ struct MPIR_Request {
 };
 int MPIR_Persist_coll_start(MPIR_Request * request);
 void MPIR_Persist_coll_free_cb(MPIR_Request * request);
-int MPIR_Persist_continue_start(MPIR_Request * request);
 
 /* Multiple Request Pools
  * Request objects creation and freeing is in a hot path. Multiple pools allow different
@@ -361,7 +369,7 @@ static inline int MPIR_Request_is_persistent(MPIR_Request * req_ptr)
             req_ptr->kind == MPIR_REQUEST_KIND__PREQUEST_COLL ||
             req_ptr->kind == MPIR_REQUEST_KIND__PART_SEND ||
             req_ptr->kind == MPIR_REQUEST_KIND__PART_RECV ||
-            req_ptr->kind == MPIR_REQUEST_KIND__PREQUEST_CONTINUE);
+            req_ptr->kind == MPIR_REQUEST_KIND__CONTINUE);
 }
 
 static inline int MPIR_Part_request_is_active(MPIR_Request * req_ptr)
@@ -412,7 +420,7 @@ static inline int MPIR_Request_is_active(MPIR_Request * req_ptr)
             case MPIR_REQUEST_KIND__PART_SEND:
             case MPIR_REQUEST_KIND__PART_RECV:
                 return MPIR_Part_request_is_active(req_ptr);
-            case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+            case MPIR_REQUEST_KIND__CONTINUE:
                 return MPIR_Cont_request_is_active(req_ptr);
             default:
                 return 1;       /* regular request is always active */

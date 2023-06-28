@@ -200,7 +200,7 @@ int MPIR_Request_completion_processing(MPIR_Request * request_ptr, MPI_Status * 
                 break;
             }
 
-        case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+        case MPIR_REQUEST_KIND__CONTINUE:
         {
             MPIR_Cont_request_inactivate(request_ptr);
 

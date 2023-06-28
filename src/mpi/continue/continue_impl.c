@@ -11,6 +11,7 @@ struct MPIR_Continue {
     MPIX_Continue_cb_function *cb;
     void *cb_data;
     MPIR_cc_t pending_request_count;
+    struct MPIR_Continue *next;
 };
 typedef struct MPIR_Continue MPIR_Continue;
 
@@ -40,61 +41,29 @@ MPIR_Object_alloc_t MPIR_Continue_context_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNA
                                           NULL, {0}
 };
 
-void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context)
-{
-    MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) cb_context;
-    MPIR_Continue *continue_ptr = context_ptr->continue_ptr;
-    MPIR_Request *cont_req = continue_ptr->cont_req;
-    /* Complete this operation request */
-    int rc = MPIR_Request_completion_processing(
-            op_request, context_ptr->status_ptr);
-    if (context_ptr->status_ptr != MPI_STATUS_IGNORE)
-        context_ptr->status_ptr->MPI_ERROR = rc;
-    if (!MPIR_Request_is_persistent(op_request)) {
-        MPIR_Request_free(op_request);
-    }
-    MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
-    /* Signal the continue callback */
-    int incomplete;
-    MPIR_cc_decr(&continue_ptr->pending_request_count, &incomplete);
-    if (!incomplete) {
-        /* All the op requests associated with this continue callback have completed */
-        /* Invoke the continue callback */
-        continue_ptr->cb(MPI_SUCCESS, continue_ptr->cb_data);
-        MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
-        /* Signal the continuation request */
-        MPIR_cc_decr(cont_req->cc_ptr, &incomplete);
-        if (!incomplete) {
-            /* All the continue callbacks associated with this continuation request have completed */
-//            MPIR_Invoke_callback_safe(cont_req);
-            MPIR_Request_free_safe(cont_req);
-        }
-    }
-}
-
-void attach_continue_context(MPIR_Continue_context *context_ptr) {
-    /* Attach the continue context to the op request */
-    if (!MPIR_Set_callback_safe(context_ptr->op_request, MPIR_Continue_callback, context_ptr)) {
-        /* the request has already completed. */
-        MPIR_Continue_callback(context_ptr->op_request, context_ptr);
-    }
-}
+void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context);
+void attach_continue_context(MPIR_Continue_context *context_ptr);
 
 int MPIR_Continue_init_impl(int flags, int max_poll,
                             MPIR_Info *info_ptr,
                             MPIR_Request **cont_req_ptr)
 {
-    MPIR_Request *cont_req = MPIR_Request_create(MPIR_REQUEST_KIND__PREQUEST_CONTINUE);
+    MPIR_Request *cont_req = MPIR_Request_create(MPIR_REQUEST_KIND__CONTINUE);
     /* We use cc to track how many continue object has been attached to this continuation request. */
     MPIR_cc_set(&cont_req->cc, 0);
-    /* Initialize the context-on-hold list */
+    /* Initialize the on-hold context list */
     cont_req->u.cont.cont_context_on_hold_list.head = NULL;
     cont_req->u.cont.cont_context_on_hold_list.tail = NULL;
+    /* Initialize the poll-only continue list */
+    cont_req->u.cont.ready_poll_only_cont_list.head = NULL;
+    cont_req->u.cont.ready_poll_only_cont_list.tail = NULL;
+    cont_req->u.cont.is_pool_only = flags & MPIX_CONT_POLL_ONLY;
+    cont_req->u.cont.max_poll = max_poll;
     *cont_req_ptr = cont_req;
     return MPI_SUCCESS;
 }
 
-int MPIR_Persist_continue_start(MPIR_Request * cont_request_ptr)
+int MPIR_Continue_start(MPIR_Request * cont_request_ptr)
 {
     MPIR_Cont_request_activate(cont_request_ptr);
     /* Attach those on-hold continue context */
@@ -106,6 +75,14 @@ int MPIR_Persist_continue_start(MPIR_Request * cont_request_ptr)
         attach_continue_context(context_ptr);
     }
     return MPI_SUCCESS;
+}
+
+void attach_continue_context(MPIR_Continue_context *context_ptr) {
+    /* Attach the continue context to the op request */
+    if (!MPIR_Set_callback_safe(context_ptr->op_request, MPIR_Continue_callback, context_ptr)) {
+        /* the request has already completed. */
+        MPIR_Continue_callback(context_ptr->op_request, context_ptr);
+    }
 }
 
 int MPIR_Continue_impl(MPIR_Request *op_request_ptr,
@@ -156,4 +133,64 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
         }
     }
     return MPI_SUCCESS;
+}
+
+void execute_continue(MPIR_Continue *continue_ptr)
+{
+    MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
+    /* Invoke the continue callback */
+    continue_ptr->cb(MPI_SUCCESS, continue_ptr->cb_data);
+    MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
+    /* Signal the continuation request */
+    int incomplete;
+    MPIR_cc_decr(cont_req_ptr->cc_ptr, &incomplete);
+    if (!incomplete) {
+        /* All the continue callbacks associated with this continuation request have completed */
+//            MPIR_Invoke_callback_safe(cont_req_ptr);
+        MPIR_Request_free_safe(cont_req_ptr);
+    }
+}
+
+void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context)
+{
+    MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) cb_context;
+    MPIR_Continue *continue_ptr = context_ptr->continue_ptr;
+    /* Complete this operation request */
+    int rc = MPIR_Request_completion_processing(
+            op_request, context_ptr->status_ptr);
+    if (context_ptr->status_ptr != MPI_STATUS_IGNORE)
+        context_ptr->status_ptr->MPI_ERROR = rc;
+    if (!MPIR_Request_is_persistent(op_request)) {
+        MPIR_Request_free(op_request);
+    }
+    MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
+    /* Signal the continue callback */
+    int incomplete;
+    MPIR_cc_decr(&continue_ptr->pending_request_count, &incomplete);
+    if (!incomplete) {
+        /* All the op requests associated with this continue callback have completed */
+        MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
+        if (cont_req_ptr->u.cont.is_pool_only) {
+            LL_APPEND(cont_req_ptr->u.cont.ready_poll_only_cont_list.head,
+                      cont_req_ptr->u.cont.ready_poll_only_cont_list.tail,
+                      continue_ptr);
+        } else {
+            execute_continue(continue_ptr);
+        }
+    }
+}
+
+void MPIR_Continue_progress(MPIR_Request *cont_request_ptr) {
+    if (!cont_request_ptr || cont_request_ptr->kind != MPIR_REQUEST_KIND__CONTINUE)
+        return;
+    int count = 0;
+    while (cont_request_ptr->u.cont.ready_poll_only_cont_list.head) {
+        MPIR_Continue *continue_ptr = cont_request_ptr->u.cont.ready_poll_only_cont_list.head;
+        LL_DELETE(cont_request_ptr->u.cont.ready_poll_only_cont_list.head,
+                  cont_request_ptr->u.cont.ready_poll_only_cont_list.tail,
+                  continue_ptr);
+        execute_continue(continue_ptr);
+        if (cont_request_ptr->u.cont.max_poll && ++count >= cont_request_ptr->u.cont.max_poll)
+            break;
+    }
 }

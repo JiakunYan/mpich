@@ -383,7 +383,7 @@ cvars:
         err = MPIR_Err_create_code(MPI_SUCCESS, MPIR_ERR_RECOVERABLE, __func__, __LINE__, \
                                    MPI_ERR_REQUEST, "**requestpartactive", 0);            \
         goto fn_fail;                                                                     \
-    } else if (((reqp)->kind == MPIR_REQUEST_KIND__PREQUEST_CONTINUE) && MPIR_Cont_request_is_active(reqp)) { \
+    } else if (((reqp)->kind == MPIR_REQUEST_KIND__CONTINUE) && MPIR_Cont_request_is_active(reqp)) { \
         err = MPIR_Err_create_code(MPI_SUCCESS, MPIR_ERR_RECOVERABLE, __func__, __LINE__, \
                                    MPI_ERR_REQUEST, "**requestpartactive", 0);            \
         goto fn_fail;                                                                     \

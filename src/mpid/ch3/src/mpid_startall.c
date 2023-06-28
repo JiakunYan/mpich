@@ -64,8 +64,8 @@ int MPID_Startall(int count, MPIR_Request * requests[])
             continue;
         }
 
-        if (preq->kind == MPIR_REQUEST_KIND__PREQUEST_CONTINUE) {
-            mpi_errno = MPIR_Persist_continue_start(preq);
+        if (preq->kind == MPIR_REQUEST_KIND__CONTINUE) {
+            mpi_errno = MPIR_Continue_start(preq);
             MPIR_ERR_CHECK(mpi_errno);
             continue;
         }
