@@ -180,6 +180,8 @@ enum MPIR_sched_type {
     MPIR_SCHED_GENTRAN
 };
 
+struct MPIR_Continue_context;
+
 /*S
   MPIR_Request - Description of the Request data structure
 
@@ -255,6 +257,9 @@ struct MPIR_Request {
         struct {
             MPL_atomic_int_t active_flag;       /* flag indicating whether in a start-complete active period.
                                                  * Value is 0 or 1. */
+            struct {
+                struct MPIR_Continue_context *head, *tail;
+            } cont_context_on_hold_list;
         } cont;
         /* Reserve space for local usages. For example, threadcomm, the actual struct
          * is defined locally and is used via casting */
