@@ -184,7 +184,7 @@ enum MPIR_sched_type {
 struct MPIR_Continue_context;
 struct MPIR_Continue;
 int MPIR_Continue_start(MPIR_Request * request);
-void MPIR_Continue_progress(MPIR_Request *cont_request_ptr);
+void MPIR_Continue_progress(MPIR_Request *request);
 
 /*S
   MPIR_Request - Description of the Request data structure

@@ -626,3 +626,8 @@ src/pmi/mpl/
 src/pmi/version.m4
 src/pmi/src/pmi_msg.h
 src/pmi/src/pmi_msg.c
+
+build
+install
+.idea
+modules/hwloc
