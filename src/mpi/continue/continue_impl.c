@@ -44,11 +44,30 @@ MPIR_Object_alloc_t MPIR_Continue_context_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNA
 
 struct {
     struct MPIR_Continue *head, *tail;
+    MPID_Thread_mutex_t lock;
 } g_deferred_cont_list = {NULL, NULL};
 
 void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_complete);
 void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context);
 void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_complete);
+
+void MPIR_Continue_global_init()
+{
+    g_deferred_cont_list.head = NULL;
+    g_deferred_cont_list.tail = NULL;
+    int err;
+    MPID_Thread_mutex_create(&g_deferred_cont_list.lock, &err);
+    MPIR_Assert(err == 0);
+}
+
+void MPIR_Continue_global_finalize()
+{
+    MPIR_Assert(g_deferred_cont_list.head == NULL);
+    MPIR_Assert(g_deferred_cont_list.tail == NULL);
+    int err;
+    MPID_Thread_mutex_destroy(&g_deferred_cont_list.lock, &err);
+    MPIR_Assert(err == 0);
+}
 
 int MPIR_Continue_init_impl(int flags, int max_poll,
                             MPIR_Info *info_ptr,
@@ -57,6 +76,13 @@ int MPIR_Continue_init_impl(int flags, int max_poll,
     MPIR_Request *cont_req = MPIR_Request_create(MPIR_REQUEST_KIND__CONTINUE);
     /* We use cc to track how many continue object has been attached to this continuation request. */
     MPIR_cc_set(&cont_req->cc, 0);
+    {
+        int err;
+        MPID_Thread_mutex_create(&cont_req->u.cont.cont_context_on_hold_list.lock, &err);
+        MPIR_Assert(err == 0);
+        MPID_Thread_mutex_create(&cont_req->u.cont.ready_poll_only_cont_list.lock, &err);
+        MPIR_Assert(err == 0);
+    }
     /* Initialize the on-hold context list */
     cont_req->u.cont.cont_context_on_hold_list.head = NULL;
     cont_req->u.cont.cont_context_on_hold_list.tail = NULL;
@@ -69,15 +95,38 @@ int MPIR_Continue_init_impl(int flags, int max_poll,
     return MPI_SUCCESS;
 }
 
+void MPIR_Continue_destroy_impl(MPIR_Request *cont_req)
+{
+    MPIR_Assert(cont_req->kind == MPIR_REQUEST_KIND__CONTINUE);
+    {
+        int err;
+        MPID_Thread_mutex_destroy(&cont_req->u.cont.cont_context_on_hold_list.lock, &err);
+        MPIR_Assert(err == 0);
+        MPID_Thread_mutex_destroy(&cont_req->u.cont.ready_poll_only_cont_list.lock, &err);
+        MPIR_Assert(err == 0);
+    }
+    MPIR_Assert(cont_req->u.cont.cont_context_on_hold_list.head == NULL);
+    MPIR_Assert(cont_req->u.cont.cont_context_on_hold_list.tail == NULL);
+    MPIR_Assert(cont_req->u.cont.ready_poll_only_cont_list.head == NULL);
+    MPIR_Assert(cont_req->u.cont.ready_poll_only_cont_list.tail == NULL);
+}
+
 int MPIR_Continue_start(MPIR_Request * cont_request_ptr)
 {
+    struct MPIR_Continue_context *tmp_head = NULL, *tmp_tail = NULL;
+    MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.cont_context_on_hold_list.lock);
     MPIR_Cont_request_activate(cont_request_ptr);
+    if (cont_request_ptr->u.cont.cont_context_on_hold_list.head) {
+        tmp_head = cont_request_ptr->u.cont.cont_context_on_hold_list.head;
+        tmp_tail = cont_request_ptr->u.cont.cont_context_on_hold_list.tail;
+        cont_request_ptr->u.cont.cont_context_on_hold_list.head = NULL;
+        cont_request_ptr->u.cont.cont_context_on_hold_list.tail = NULL;
+    }
+    MPID_THREAD_CS_EXIT(VCI, cont_request_ptr->u.cont.cont_context_on_hold_list.lock);
     /* Attach those on-hold continue context */
-    while (cont_request_ptr->u.cont.cont_context_on_hold_list.head) {
-        MPIR_Continue_context *context_ptr = cont_request_ptr->u.cont.cont_context_on_hold_list.head;
-        LL_DELETE(cont_request_ptr->u.cont.cont_context_on_hold_list.head,
-                  cont_request_ptr->u.cont.cont_context_on_hold_list.tail,
-                  context_ptr);
+    while (tmp_head) {
+        MPIR_Continue_context *context_ptr = tmp_head;
+        LL_DELETE(tmp_head, tmp_tail, context_ptr);
         attach_continue_context(context_ptr, false);
     }
     return MPI_SUCCESS;
@@ -110,7 +159,6 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
         MPIR_Request_add_ref(cont_request_ptr);
     }
     /* Set various condition variables */
-    bool cont_request_activated = MPIR_Cont_request_is_active(cont_request_ptr);
     bool defer_complete = flags & MPIX_CONT_DEFER_COMPLETE;
     /* Create the continue object for every continue callback */
     MPIR_Continue *continue_ptr = (MPIR_Continue *) MPIR_Handle_obj_alloc(&MPIR_Continue_mem);
@@ -134,14 +182,22 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
             context_ptr->status_ptr = MPI_STATUS_IGNORE;
         }
         context_ptr->op_request = request_ptrs[i];
+        /* if the continue request is not activated yet, do not attach */
+        bool is_on_hold = false;
+        if (!MPIR_Cont_request_is_active(cont_request_ptr)) {
+            MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.cont_context_on_hold_list.lock);
+            if (!MPIR_Cont_request_is_active(cont_request_ptr)) {
+                /* The continuation request is inactive. Do not attach yet. */
+                LL_APPEND(cont_request_ptr->u.cont.cont_context_on_hold_list.head,
+                          cont_request_ptr->u.cont.cont_context_on_hold_list.tail,
+                          context_ptr);
+                is_on_hold = true;
+            }
+            MPID_THREAD_CS_EXIT(VCI, cont_request_ptr->u.cont.cont_context_on_hold_list.lock);
+        }
         /* attach the continue context to op request */
-        if (cont_request_activated) {
+        if (!is_on_hold) {
             attach_continue_context(context_ptr, defer_complete);
-        } else {
-            /* The continuation request is inactive. Do not attach yet. */
-            LL_APPEND(cont_request_ptr->u.cont.cont_context_on_hold_list.head,
-                      cont_request_ptr->u.cont.cont_context_on_hold_list.tail,
-                      context_ptr);
         }
     }
     return MPI_SUCCESS;
@@ -186,15 +242,19 @@ void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_
         } else if (cont_req_ptr->u.cont.is_pool_only) {
             // Pool-only continuation request
             // Push to the continuation request local ready list
+            MPID_THREAD_CS_ENTER(VCI, cont_req_ptr->u.cont.ready_poll_only_cont_list.lock);
             LL_APPEND(cont_req_ptr->u.cont.ready_poll_only_cont_list.head,
                       cont_req_ptr->u.cont.ready_poll_only_cont_list.tail,
                       continue_ptr);
+            MPID_THREAD_CS_EXIT(VCI, cont_req_ptr->u.cont.ready_poll_only_cont_list.lock);
         } else {
             // General-purpose continuation request
             // Push to the global ready list
+            MPID_THREAD_CS_ENTER(VCI, g_deferred_cont_list.lock);
             LL_APPEND(g_deferred_cont_list.head,
                       g_deferred_cont_list.tail,
                       continue_ptr);
+            MPID_THREAD_CS_EXIT(VCI, g_deferred_cont_list.lock);
         }
     }
 
@@ -209,14 +269,23 @@ int MPIR_Continue_progress_request(MPIR_Request *cont_request_ptr)
 {
     MPIR_Assert(cont_request_ptr && cont_request_ptr->kind == MPIR_REQUEST_KIND__CONTINUE);
     int count = 0;
+    struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
+    MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
+    /* TODO: use a more efficient way to pop this list */
     while (cont_request_ptr->u.cont.ready_poll_only_cont_list.head) {
         MPIR_Continue *continue_ptr = cont_request_ptr->u.cont.ready_poll_only_cont_list.head;
         LL_DELETE(cont_request_ptr->u.cont.ready_poll_only_cont_list.head,
                   cont_request_ptr->u.cont.ready_poll_only_cont_list.tail,
                   continue_ptr);
-        execute_continue(continue_ptr);
+        LL_APPEND(local_head, local_tail, continue_ptr);
         if (cont_request_ptr->u.cont.max_poll && ++count >= cont_request_ptr->u.cont.max_poll)
             break;
+    }
+    MPID_THREAD_CS_EXIT(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
+    while (local_head) {
+        MPIR_Continue *continue_ptr = local_head;
+        LL_DELETE(local_head, local_tail, continue_ptr);
+        execute_continue(continue_ptr);
     }
     return count;
 }
@@ -231,12 +300,21 @@ void MPIR_Continue_progress(MPIR_Request *request)
         max_poll = request->u.cont.max_poll;
     }
     // make progress on the global list
+    struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
+    MPID_THREAD_CS_ENTER(VCI, g_deferred_cont_list.lock);
+    /* TODO: use a more efficient way to pop this list */
     while ((!max_poll || count < max_poll) && g_deferred_cont_list.head) {
         MPIR_Continue *continue_ptr = g_deferred_cont_list.head;
         LL_DELETE(g_deferred_cont_list.head,
                   g_deferred_cont_list.tail,
                   continue_ptr);
-        execute_continue(continue_ptr);
+        LL_APPEND(local_head, local_tail, continue_ptr);
         ++count;
+    }
+    MPID_THREAD_CS_EXIT(VCI, g_deferred_cont_list.lock);
+    while (local_head) {
+        MPIR_Continue *continue_ptr = local_head;
+        LL_DELETE(local_head, local_tail, continue_ptr);
+        execute_continue(continue_ptr);
     }
 }

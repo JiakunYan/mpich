@@ -630,4 +630,3 @@ src/pmi/src/pmi_msg.c
 build
 install
 .idea
-modules/hwloc

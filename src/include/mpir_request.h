@@ -272,11 +272,13 @@ struct MPIR_Request {
                                                  * Value is 0 or 1. */
             struct {
                 struct MPIR_Continue_context *head, *tail;
+                MPID_Thread_mutex_t lock;
             } cont_context_on_hold_list;
             bool is_pool_only;
             int max_poll;
             struct {
                 struct MPIR_Continue *head, *tail;
+                MPID_Thread_mutex_t lock;
             } ready_poll_only_cont_list;
         } cont;
         /* Reserve space for local usages. For example, threadcomm, the actual struct
@@ -567,6 +569,7 @@ MPL_STATIC_INLINE_PREFIX MPIR_Request *MPIR_Request_create_null_recv(void)
 
 MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req);
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_free(MPIR_Request * req);
+void MPIR_Continue_destroy_impl(MPIR_Request *cont_req);
 
 static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_safety)
 {
@@ -625,14 +628,21 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
             MPIR_Comm_release(req->comm);
         }
 
-        if (req->kind == MPIR_REQUEST_KIND__GREQUEST) {
-            MPL_free(req->u.ureq.greq_fns);
-        }
-
-        if (req->kind == MPIR_REQUEST_KIND__SEND) {
-            MPII_SENDQ_FORGET(req);
-        } else if (req->kind == MPIR_REQUEST_KIND__RECV) {
-            MPII_RECVQ_FORGET(req);
+        switch (req->kind) {
+            case MPIR_REQUEST_KIND__GREQUEST:
+                MPL_free(req->u.ureq.greq_fns);
+                break;
+            case MPIR_REQUEST_KIND__SEND:
+                MPII_SENDQ_FORGET(req);
+                break;
+            case MPIR_REQUEST_KIND__RECV:
+                MPII_RECVQ_FORGET(req);
+                break;
+            case MPIR_REQUEST_KIND__CONTINUE:
+                MPIR_Continue_destroy_impl(req);
+                break;
+            default:
+                break;
         }
 
         MPID_Request_destroy_hook(req);
