@@ -89,9 +89,7 @@ MPL_STATIC_INLINE_PREFIX int MPID_Startall(int count, MPIR_Request * requests[])
 
     for (i = 0; i < count; i++) {
         MPIR_Request *const preq = requests[i];
-        preq->cb = NULL;
-        preq->cb_context = NULL;
-        MPL_atomic_relaxed_store_int(&preq->cb_state, MPIR_REQUEST_CALLBACK_NULL);
+        MPIR_Request_start(preq);
         switch (preq->kind) {
             case MPIR_REQUEST_KIND__PREQUEST_SEND:
             case MPIR_REQUEST_KIND__PREQUEST_RECV:

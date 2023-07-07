@@ -85,7 +85,7 @@ int MPIR_Continue_start(MPIR_Request * cont_request_ptr)
 
 void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_complete) {
     /* Attach the continue context to the op request */
-    if (!MPIR_Set_callback_safe(context_ptr->op_request, MPIR_Continue_callback, context_ptr)) {
+    if (!MPIR_Register_callback(context_ptr->op_request, MPIR_Continue_callback, context_ptr, false)) {
         /* the request has already completed. */
         complete_op_request(context_ptr->op_request, context_ptr, defer_complete);
     }
@@ -158,7 +158,6 @@ void execute_continue(MPIR_Continue *continue_ptr)
     MPIR_cc_decr(cont_req_ptr->cc_ptr, &incomplete);
     if (!incomplete) {
         /* All the continue callbacks associated with this continuation request have completed */
-//            MPIR_Invoke_callback_safe(cont_req_ptr);
         MPIR_Request_free_safe(cont_req_ptr);
     }
 }

@@ -97,6 +97,12 @@ typedef void (MPIR_Grequest_f77_query_function) (void *, MPI_Fint *, MPI_Fint *)
 
 /* Typedefs for request callback */
 typedef void (MPIR_Request_callback_function) (MPIR_Request *, void *);
+struct MPIR_Request_cb_t {
+    MPIR_Request_callback_function *fn;
+    void *arg;
+    bool is_persistent;
+    struct MPIR_Request_cb_t *next;
+};
 #define MPIR_REQUEST_CALLBACK_NULL 0
 #define MPIR_REQUEST_CALLBACK_SET 1
 #define MPIR_REQUEST_CALLBACK_DONE 2
@@ -221,9 +227,12 @@ struct MPIR_Request {
     /* Status is needed for wait/test/recv */
     MPI_Status status;
     /* Callback */
-    MPL_atomic_int_t cb_state;
-    MPIR_Request_callback_function *cb;
-    void *cb_context;
+    MPID_Thread_mutex_t cbs_lock;
+    MPIR_atomic_flag_t cbs_invoked;
+    struct {
+        struct MPIR_Request_cb_t *head;
+        struct MPIR_Request_cb_t *tail;
+    } cbs;
 
     union {
         struct {
@@ -435,6 +444,7 @@ static inline int MPIR_Request_is_active(MPIR_Request * req_ptr)
                                          | MPIR_REQUESTS_PROPERTY__NO_GREQUESTS   \
                                          | MPIR_REQUESTS_PROPERTY__SEND_RECV_ONLY)
 
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_init(MPIR_Request * req);
 /* NOTE: Pool-specific request creation is unsafe unless under global thread granularity.
  */
 static inline MPIR_Request *MPIR_Request_create_from_pool(MPIR_Request_kind_t kind, int pool,
@@ -480,10 +490,7 @@ static inline MPIR_Request *MPIR_Request_create_from_pool(MPIR_Request_kind_t ki
     MPIR_STATUS_SET_CANCEL_BIT(req->status, FALSE);
 
     req->comm = NULL;
-
-    req->cb = NULL;
-    req->cb_context = NULL;
-    MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL);
+    MPIR_Request_cb_init(req);
 
     switch (kind) {
         case MPIR_REQUEST_KIND__COLL:
@@ -558,7 +565,8 @@ MPL_STATIC_INLINE_PREFIX MPIR_Request *MPIR_Request_create_null_recv(void)
     return get_builtin_req(HANDLE_INDEX(MPIR_REQUEST_NULL_RECV), MPIR_REQUEST_KIND__RECV);
 }
 
-MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_unsafe(MPIR_Request * req);
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req);
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_free(MPIR_Request * req);
 
 static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_safety)
 {
@@ -568,6 +576,10 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
     if (HANDLE_IS_BUILTIN(req->handle)) {
         /* do not free builtin request objects */
         return;
+    }
+
+    if (MPIR_Request_is_complete(req)) {
+        MPIR_Invoke_callback(req);
     }
 
     MPIR_Request_release_ref(req, &inuse);
@@ -608,6 +620,7 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
          * when we destroy a request */
         /* FIXME: We need a way to call these routines ONLY when the
          * related ref count has become zero. */
+        MPIR_Request_cb_free(req);
         if (req->comm != NULL) {
             MPIR_Comm_release(req->comm);
         }
@@ -647,68 +660,73 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Request_free(MPIR_Request * req)
     MPIR_Request_free_with_safety(req, 1);
 }
 
-MPL_STATIC_INLINE_PREFIX bool MPIR_Set_callback_unsafe(MPIR_Request * req,
-                                                       MPIR_Request_callback_function *cb,
-                                                       void *cb_context)
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_init(MPIR_Request * req)
 {
-    if (req->cb == NULL) {
-        req->cb = cb;
-        req->cb_context = cb_context;
-        return true;
-    } else {
-        return false;
+    MPIR_atomic_flag_set(&req->cbs_invoked, false);
+    req->cbs.head = NULL;
+    req->cbs.tail = NULL;
+    int err;
+    MPID_Thread_mutex_create(&req->cbs_lock, &err);
+    MPIR_Assert(!err);
+}
+
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_free(MPIR_Request * req)
+{
+    // free all the persistent callbacks
+    while (req->cbs.head) {
+        struct MPIR_Request_cb_t *cb = req->cbs.head;
+        MPIR_Assert(cb->is_persistent);
+        LL_DELETE(req->cbs.head, req->cbs.tail, cb);
+        MPL_free(cb);
     }
 }
 
-MPL_STATIC_INLINE_PREFIX bool MPIR_Set_callback_safe(MPIR_Request * req,
-                                                     MPIR_Request_callback_function *cb,
-                                                     void *cb_context)
+MPL_STATIC_INLINE_PREFIX bool MPIR_Register_callback(MPIR_Request * req,
+                                                     MPIR_Request_callback_function *cb_fn,
+                                                     void *cb_arg,
+                                                     bool is_persistent)
 {
-    int local_state = MPL_atomic_relaxed_load_int(&req->cb_state);
-    if (local_state == MPIR_REQUEST_CALLBACK_DONE) {
+    if (MPIR_atomic_flag_get(&req->cbs_invoked))
         return false;
-    } else {
-        MPIR_Assert(local_state == MPIR_REQUEST_CALLBACK_NULL);
-        int oldval = MPL_atomic_cas_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL, MPIR_REQUEST_CALLBACK_SET);
-        if (oldval == MPIR_REQUEST_CALLBACK_NULL) {
-            bool ret = MPIR_Set_callback_unsafe(req, cb, cb_context);
-            MPIR_Assert(ret);
-            return true;
-        } else {
-            MPIR_Assert(oldval == MPIR_REQUEST_CALLBACK_DONE);
-            return false;
+    MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
+    bool succeed = !MPIR_atomic_flag_get(&req->cbs_invoked);
+    if (succeed) {
+        struct MPIR_Request_cb_t *cb = MPL_malloc(sizeof(struct MPIR_Request_cb_t), MPL_MEM_OTHER);
+        cb->fn = cb_fn;
+        cb->arg = cb_arg;
+        cb->is_persistent = is_persistent;
+        LL_APPEND(req->cbs.head, req->cbs.tail, cb);
+    }
+    MPID_THREAD_CS_EXIT(VCI, req->cbs_lock);
+    return succeed;
+}
+
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req)
+{
+    if (MPIR_atomic_flag_get(&req->cbs_invoked)) {
+        return;
+    }
+    bool invoked = MPIR_atomic_flag_swap(&req->cbs_invoked, true);
+    if (invoked)
+        return;
+    if (req->cbs.head == NULL)
+        return;
+
+    MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
+    while (req->cbs.head) {
+        struct MPIR_Request_cb_t *cb = req->cbs.head;
+        cb->fn(req, cb->arg);
+        if (!cb->is_persistent) {
+            LL_DELETE(req->cbs.head, req->cbs.tail, cb);
+            MPL_free(cb);
         }
     }
+    MPID_THREAD_CS_EXIT(VCI, req->cbs_lock);
 }
 
-MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_unsafe(MPIR_Request * req)
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_start(MPIR_Request * req)
 {
-    if (req->cb) {
-        req->cb(req, req->cb_context);
-        req->cb = NULL;
-    }
-    /* This store maybe not necessary. */
-    MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_DONE);
-}
-
-MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_safe(MPIR_Request * req)
-{
-    bool safe_to_call = false;
-    int local_state = MPL_atomic_relaxed_load_int(&req->cb_state);
-    if (local_state == MPIR_REQUEST_CALLBACK_SET) {
-        safe_to_call = true;
-    } else {
-        MPIR_Assert(local_state == MPIR_REQUEST_CALLBACK_NULL);
-        int oldval = MPL_atomic_cas_int(&req->cb_state, MPIR_REQUEST_CALLBACK_NULL, MPIR_REQUEST_CALLBACK_DONE);
-        if (oldval == MPIR_REQUEST_CALLBACK_SET) {
-            safe_to_call = true;
-        } else {
-            MPIR_Assert(oldval == MPIR_REQUEST_CALLBACK_NULL);
-        }
-    }
-    if (safe_to_call) {
-        MPIR_Invoke_callback_unsafe(req);
-    }
+    MPIR_atomic_flag_set(&req->cbs_invoked, false);
 }
 
 /* Requests that are not created inside device (general requests, nonblocking collective
@@ -719,7 +737,6 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_safe(MPIR_Request * req)
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_complete(MPIR_Request * req)
 {
     MPIR_cc_set(&req->cc, 0);
-    MPIR_Invoke_callback_safe(req);
     MPIR_Request_free(req);
 }
 

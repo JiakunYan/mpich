@@ -20,10 +20,9 @@ static void init_builtin_request(MPIR_Request * req, int handle, MPIR_Request_ki
     req->status.MPI_ERROR = MPI_SUCCESS;
     MPIR_STATUS_SET_CANCEL_BIT(req->status, FALSE);
     req->comm = NULL;
-    req->cb = NULL;
-    req->cb_context = NULL;
-    /* build-in request should be in the completed state */
-    MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_DONE);
+    MPIR_Request_cb_init(req);
+    // built-in request are in the completed state
+    MPIR_atomic_flag_set(&req->cbs_invoked, true);
 }
 
 void MPII_init_request(void)
