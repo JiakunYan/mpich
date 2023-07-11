@@ -135,7 +135,7 @@ int MPIR_Continue_start(MPIR_Request * cont_request_ptr)
 void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_complete) {
     /* Attach the continue context to the op request */
     if (!MPIR_Register_callback(context_ptr->op_request, MPIR_Continue_callback, context_ptr, false)) {
-        /* the request has already completed. */
+        /* the request has already been completed. */
         complete_op_request(context_ptr->op_request, context_ptr, defer_complete);
     }
 }

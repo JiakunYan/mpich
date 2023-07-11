@@ -103,9 +103,6 @@ struct MPIR_Request_cb_t {
     bool is_persistent;
     struct MPIR_Request_cb_t *next;
 };
-#define MPIR_REQUEST_CALLBACK_NULL 0
-#define MPIR_REQUEST_CALLBACK_SET 1
-#define MPIR_REQUEST_CALLBACK_DONE 2
 
 /* vtable-ish structure holding generalized request function pointers and other
  * state.  Saves ~48 bytes in pt2pt requests on many platforms. */
@@ -228,7 +225,7 @@ struct MPIR_Request {
     MPI_Status status;
     /* Callback */
     MPID_Thread_mutex_t cbs_lock;
-    MPIR_atomic_flag_t cbs_invoked;
+    bool cbs_invoked;
     struct {
         struct MPIR_Request_cb_t *head;
         struct MPIR_Request_cb_t *tail;
@@ -672,7 +669,7 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Request_free(MPIR_Request * req)
 
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_init(MPIR_Request * req)
 {
-    MPIR_atomic_flag_set(&req->cbs_invoked, false);
+    req->cbs_invoked = false;
     req->cbs.head = NULL;
     req->cbs.tail = NULL;
     int err;
@@ -696,10 +693,10 @@ MPL_STATIC_INLINE_PREFIX bool MPIR_Register_callback(MPIR_Request * req,
                                                      void *cb_arg,
                                                      bool is_persistent)
 {
-    if (MPIR_atomic_flag_get(&req->cbs_invoked))
+    if (req->cbs_invoked)
         return false;
     MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
-    bool succeed = !MPIR_atomic_flag_get(&req->cbs_invoked);
+    bool succeed = !req->cbs_invoked;
     if (succeed) {
         struct MPIR_Request_cb_t *cb = MPL_malloc(sizeof(struct MPIR_Request_cb_t), MPL_MEM_OTHER);
         cb->fn = cb_fn;
@@ -713,22 +710,19 @@ MPL_STATIC_INLINE_PREFIX bool MPIR_Register_callback(MPIR_Request * req,
 
 MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req)
 {
-    if (MPIR_atomic_flag_get(&req->cbs_invoked)) {
+    if (req->cbs_invoked) {
         return;
     }
-    bool invoked = MPIR_atomic_flag_swap(&req->cbs_invoked, true);
-    if (invoked)
-        return;
-    if (req->cbs.head == NULL)
-        return;
-
     MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
-    while (req->cbs.head) {
-        struct MPIR_Request_cb_t *cb = req->cbs.head;
-        cb->fn(req, cb->arg);
-        if (!cb->is_persistent) {
-            LL_DELETE(req->cbs.head, req->cbs.tail, cb);
-            MPL_free(cb);
+    if (!req->cbs_invoked) {
+        req->cbs_invoked = true;
+        while (req->cbs.head) {
+            struct MPIR_Request_cb_t *cb = req->cbs.head;
+            cb->fn(req, cb->arg);
+            if (!cb->is_persistent) {
+                LL_DELETE(req->cbs.head, req->cbs.tail, cb);
+                MPL_free(cb);
+            }
         }
     }
     MPID_THREAD_CS_EXIT(VCI, req->cbs_lock);
@@ -736,7 +730,7 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req)
 
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_start(MPIR_Request * req)
 {
-    MPIR_atomic_flag_set(&req->cbs_invoked, false);
+    req->cbs_invoked = false;
 }
 
 /* Requests that are not created inside device (general requests, nonblocking collective

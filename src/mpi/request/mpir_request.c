@@ -22,7 +22,7 @@ static void init_builtin_request(MPIR_Request * req, int handle, MPIR_Request_ki
     req->comm = NULL;
     MPIR_Request_cb_init(req);
     // built-in request are in the completed state
-    MPIR_atomic_flag_set(&req->cbs_invoked, true);
+    req->cbs_invoked = true;
 }
 
 void MPII_init_request(void)
