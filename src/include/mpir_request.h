@@ -693,7 +693,7 @@ MPL_STATIC_INLINE_PREFIX bool MPIR_Register_callback(MPIR_Request * req,
                                                      void *cb_arg,
                                                      bool is_persistent)
 {
-    if (req->cbs_invoked)
+    if (MPIR_Request_is_complete(req))
         return false;
     MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
     bool succeed = !req->cbs_invoked;

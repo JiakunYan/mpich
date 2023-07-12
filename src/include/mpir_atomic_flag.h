@@ -57,7 +57,7 @@ static inline int MPIR_atomic_flag_swap(MPIR_atomic_flag_t * flag_ptr, int val)
 
 static inline int MPIR_atomic_flag_cas(MPIR_atomic_flag_t * flag_ptr, int old_val, int new_val)
 {
-    itn ret = *flag_ptr;
+    int ret = *flag_ptr;
     if (*flag_ptr == old_val) {
         *flag_ptr = new_val;
     }
