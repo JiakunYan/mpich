@@ -157,6 +157,9 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
     MPIR_cc_incr(cont_request_ptr->cc_ptr, &was_incompleted);
     if (!was_incompleted) {
         MPIR_Request_add_ref(cont_request_ptr);
+        /* A hack for now since continuation request can jump
+         * between complete and incomplete multiple times */
+        cont_request_ptr->cbs_invoked = false;
     }
     /* Set various condition variables */
     bool defer_complete = flags & MPIX_CONT_DEFER_COMPLETE;
@@ -210,10 +213,13 @@ void execute_continue(MPIR_Continue *continue_ptr)
     continue_ptr->cb(MPI_SUCCESS, continue_ptr->cb_data);
     MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
     /* Signal the continuation request */
+    /* TODO: Find a suitable request complete function */
     int incomplete;
     MPIR_cc_decr(cont_req_ptr->cc_ptr, &incomplete);
     if (!incomplete) {
         /* All the continue callbacks associated with this continuation request have completed */
+        /* TODO: reason about how to invoke the callback for continuation request */
+//        MPIR_Invoke_callback(cont_req_ptr, false);
         MPIR_Request_free_safe(cont_req_ptr);
     }
 }

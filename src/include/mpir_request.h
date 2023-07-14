@@ -564,7 +564,7 @@ MPL_STATIC_INLINE_PREFIX MPIR_Request *MPIR_Request_create_null_recv(void)
     return get_builtin_req(HANDLE_INDEX(MPIR_REQUEST_NULL_RECV), MPIR_REQUEST_KIND__RECV);
 }
 
-MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req);
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req, bool in_cs);
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_cb_free(MPIR_Request * req);
 void MPIR_Continue_destroy_impl(MPIR_Request *cont_req);
 
@@ -576,10 +576,6 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
     if (HANDLE_IS_BUILTIN(req->handle)) {
         /* do not free builtin request objects */
         return;
-    }
-
-    if (MPIR_Request_is_complete(req)) {
-        MPIR_Invoke_callback(req);
     }
 
     MPIR_Request_release_ref(req, &inuse);
@@ -708,24 +704,32 @@ MPL_STATIC_INLINE_PREFIX bool MPIR_Register_callback(MPIR_Request * req,
     return succeed;
 }
 
-MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req)
+MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req, bool in_cs)
 {
-    if (req->cbs_invoked) {
+    /* At this point, for each req, only one thread should execute this code. */
+    MPIR_Assert(!req->cbs_invoked);
+    MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
+    req->cbs_invoked = true;
+    MPID_THREAD_CS_EXIT(VCI, req->cbs_lock);
+    /* So we do not need to protect this check */
+    if (!req->cbs.head) {
         return;
     }
-    MPID_THREAD_CS_ENTER(VCI, req->cbs_lock);
-    if (!req->cbs_invoked) {
-        req->cbs_invoked = true;
-        while (req->cbs.head) {
-            struct MPIR_Request_cb_t *cb = req->cbs.head;
-            cb->fn(req, cb->arg);
-            if (!cb->is_persistent) {
-                LL_DELETE(req->cbs.head, req->cbs.tail, cb);
-                MPL_free(cb);
-            }
+    if (in_cs) {
+        MPID_THREAD_CS_EXIT(VCI, (*(MPID_Thread_mutex_t *) MPIR_Request_mem[MPIR_REQUEST_POOL(req)].lock));
+    }
+    /* All the callbacks should be invoked without vci lock. */
+    while (req->cbs.head) {
+        struct MPIR_Request_cb_t *cb = req->cbs.head;
+        cb->fn(req, cb->arg);
+        if (!cb->is_persistent) {
+            LL_DELETE(req->cbs.head, req->cbs.tail, cb);
+            MPL_free(cb);
         }
     }
-    MPID_THREAD_CS_EXIT(VCI, req->cbs_lock);
+    if (in_cs) {
+        MPID_THREAD_CS_ENTER(VCI, (*(MPID_Thread_mutex_t *) MPIR_Request_mem[MPIR_REQUEST_POOL(req)].lock));
+    }
 }
 
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_start(MPIR_Request * req)
@@ -741,7 +745,13 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Request_start(MPIR_Request * req)
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_complete(MPIR_Request * req)
 {
     MPIR_cc_set(&req->cc, 0);
+    MPIR_Invoke_callback(req, false);
     MPIR_Request_free(req);
+}
+MPL_STATIC_INLINE_PREFIX void MPIR_Request_complete_nofree(MPIR_Request * req)
+{
+    MPIR_cc_set(&req->cc, 0);
+    MPIR_Invoke_callback(req, false);
 }
 
 /* The "fastpath" version of MPIR_Request_completion_processing.  It only handles
