@@ -74,6 +74,7 @@ int MPIR_Continue_init_impl(int flags, int max_poll,
                             MPIR_Request **cont_req_ptr)
 {
     MPIR_Request *cont_req = MPIR_Request_create(MPIR_REQUEST_KIND__CONTINUE);
+    MPIR_Cont_request_inactivate(cont_req);
     /* We use cc to track how many continue object has been attached to this continuation request. */
     MPIR_cc_set(&cont_req->cc, 0);
     {
