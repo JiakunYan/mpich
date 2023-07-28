@@ -96,7 +96,7 @@ typedef void (MPIR_Grequest_f77_free_function) (void *, MPI_Fint *);
 typedef void (MPIR_Grequest_f77_query_function) (void *, MPI_Fint *, MPI_Fint *);
 
 /* Typedefs for request callback */
-typedef void (MPIR_Request_callback_function) (MPIR_Request *, void *);
+typedef void (MPIR_Request_callback_function) (MPIR_Request *, bool, void *);
 struct MPIR_Request_cb_t {
     MPIR_Request_callback_function *fn;
     void *arg;
@@ -715,20 +715,14 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req, bool in_c
     if (!req->cbs.head) {
         return;
     }
-    if (in_cs) {
-        MPID_THREAD_CS_EXIT(VCI, (*(MPID_Thread_mutex_t *) MPIR_Request_mem[MPIR_REQUEST_POOL(req)].lock));
-    }
     /* All the callbacks should be invoked without vci lock. */
     while (req->cbs.head) {
         struct MPIR_Request_cb_t *cb = req->cbs.head;
-        cb->fn(req, cb->arg);
+        cb->fn(req, in_cs, cb->arg);
         if (!cb->is_persistent) {
             LL_DELETE(req->cbs.head, req->cbs.tail, cb);
             MPL_free(cb);
         }
-    }
-    if (in_cs) {
-        MPID_THREAD_CS_ENTER(VCI, (*(MPID_Thread_mutex_t *) MPIR_Request_mem[MPIR_REQUEST_POOL(req)].lock));
     }
 }
 

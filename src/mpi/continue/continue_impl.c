@@ -47,8 +47,8 @@ struct {
     MPID_Thread_mutex_t lock;
 } g_deferred_cont_list = {NULL, NULL};
 
-void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_complete);
-void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context);
+void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context, bool defer_complete);
+void MPIR_Continue_callback(MPIR_Request *op_request, bool in_cs, void *cb_context);
 void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_complete);
 
 void MPIR_Continue_global_init()
@@ -137,7 +137,7 @@ void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_comp
     /* Attach the continue context to the op request */
     if (!MPIR_Register_callback(context_ptr->op_request, MPIR_Continue_callback, context_ptr, false)) {
         /* the request has already been completed. */
-        complete_op_request(context_ptr->op_request, context_ptr, defer_complete);
+        complete_op_request(context_ptr->op_request, false, context_ptr, defer_complete);
     }
 }
 
@@ -207,7 +207,7 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
     return MPI_SUCCESS;
 }
 
-void execute_continue(MPIR_Continue *continue_ptr)
+void execute_continue(MPIR_Continue *continue_ptr, bool in_cs, int which_cs)
 {
     MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
     /* Invoke the continue callback */
@@ -221,21 +221,23 @@ void execute_continue(MPIR_Continue *continue_ptr)
         /* All the continue callbacks associated with this continuation request have completed */
         /* TODO: reason about how to invoke the callback for continuation request */
 //        MPIR_Invoke_callback(cont_req_ptr, false);
-        MPIR_Request_free_safe(cont_req_ptr);
+        MPIR_Request_free_with_safety(cont_req_ptr, !(in_cs && MPIR_REQUEST_POOL(cont_req_ptr) == which_cs));
     }
 }
 
-void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_complete)
+void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context, bool defer_complete)
 {
     MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) cb_context;
     MPIR_Continue *continue_ptr = context_ptr->continue_ptr;
     /* Complete this operation request */
+    /* FIXME: MPIR_Request_completion_processing can call MPIR_Request_free,
+     * which might lead to deadlock */
     int rc = MPIR_Request_completion_processing(
             op_request, context_ptr->status_ptr);
     if (context_ptr->status_ptr != MPI_STATUS_IGNORE)
         context_ptr->status_ptr->MPI_ERROR = rc;
     if (!MPIR_Request_is_persistent(op_request)) {
-        MPIR_Request_free(op_request);
+        MPIR_Request_free_with_safety(op_request, !in_cs);
     }
     MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
     /* Signal the continue callback */
@@ -245,7 +247,7 @@ void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_
         /* All the op requests associated with this continue callback have completed */
         MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
         if (continue_ptr->is_immediate && !defer_complete) {
-            execute_continue(continue_ptr);
+            execute_continue(continue_ptr, in_cs, MPIR_REQUEST_POOL(op_request));
         } else if (cont_req_ptr->u.cont.is_pool_only) {
             // Pool-only continuation request
             // Push to the continuation request local ready list
@@ -267,9 +269,9 @@ void complete_op_request(MPIR_Request *op_request, void *cb_context, bool defer_
 
 }
 
-void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context)
+void MPIR_Continue_callback(MPIR_Request *op_request, bool in_cs, void *cb_context)
 {
-    complete_op_request(op_request, cb_context, false);
+    complete_op_request(op_request, in_cs, cb_context, false);
 }
 
 int MPIR_Continue_progress_request(MPIR_Request *cont_request_ptr)
@@ -292,7 +294,7 @@ int MPIR_Continue_progress_request(MPIR_Request *cont_request_ptr)
     while (local_head) {
         MPIR_Continue *continue_ptr = local_head;
         LL_DELETE(local_head, local_tail, continue_ptr);
-        execute_continue(continue_ptr);
+        execute_continue(continue_ptr, false, 0 /* Does not matter */);
     }
     return count;
 }
@@ -322,6 +324,6 @@ void MPIR_Continue_progress(MPIR_Request *request)
     while (local_head) {
         MPIR_Continue *continue_ptr = local_head;
         LL_DELETE(local_head, local_tail, continue_ptr);
-        execute_continue(continue_ptr);
+        execute_continue(continue_ptr, false, 0 /* Does not matter */);
     }
 }
