@@ -188,6 +188,7 @@ struct MPIR_Continue_context;
 struct MPIR_Continue;
 int MPIR_Continue_start(MPIR_Request * request);
 void MPIR_Continue_progress(MPIR_Request *request);
+int MPIR_Continue_progress_tls();
 
 /*S
   MPIR_Request - Description of the Request data structure

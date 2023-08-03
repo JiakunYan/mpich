@@ -47,6 +47,10 @@ struct {
     MPID_Thread_mutex_t lock;
 } g_deferred_cont_list = {NULL, NULL};
 
+__thread struct {
+    struct MPIR_Continue *head, *tail;
+} tls_deferred_cont_list = {NULL, NULL};
+
 void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context, bool defer_complete);
 void MPIR_Continue_callback(MPIR_Request *op_request, bool in_cs, void *cb_context);
 void attach_continue_context(MPIR_Continue_context *context_ptr, bool defer_complete);
@@ -153,14 +157,19 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
                           MPIX_Continue_cb_function *cb, void *cb_data, int flags,
                           MPI_Status *array_of_statuses, MPIR_Request *cont_request_ptr)
 {
-    /* Add one continue to the continuation request */
-    int was_incompleted;
-    MPIR_cc_incr(cont_request_ptr->cc_ptr, &was_incompleted);
-    if (!was_incompleted) {
-        MPIR_Request_add_ref(cont_request_ptr);
-        /* A hack for now since continuation request can jump
-         * between complete and incomplete multiple times */
-        cont_request_ptr->cbs_invoked = false;
+    if (flags & MPIX_CONT_FORGET) {
+        cont_request_ptr = NULL;
+    }
+    if (cont_request_ptr) {
+        /* Add one continue to the continuation request */
+        int was_incompleted;
+        MPIR_cc_incr(cont_request_ptr->cc_ptr, &was_incompleted);
+        if (!was_incompleted) {
+            MPIR_Request_add_ref(cont_request_ptr);
+            /* A hack for now since continuation request can jump
+             * between complete and incomplete multiple times */
+            cont_request_ptr->cbs_invoked = false;
+        }
     }
     /* Set various condition variables */
     bool defer_complete = flags & MPIX_CONT_DEFER_COMPLETE;
@@ -170,7 +179,7 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
     continue_ptr->cb = cb;
     continue_ptr->cb_data = cb_data;
     MPIR_cc_set(&continue_ptr->pending_request_count, count);
-    if (!cont_request_ptr->u.cont.is_pool_only && flags & MPIX_CONT_IMMEDIATE)
+    if (flags & MPIX_CONT_IMMEDIATE)
         continue_ptr->is_immediate = true;
     else
         continue_ptr->is_immediate = false;
@@ -188,7 +197,7 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
         context_ptr->op_request = request_ptrs[i];
         /* if the continue request is not activated yet, do not attach */
         bool is_on_hold = false;
-        if (!MPIR_Cont_request_is_active(cont_request_ptr)) {
+        if (cont_request_ptr && !MPIR_Cont_request_is_active(cont_request_ptr)) {
             MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.cont_context_on_hold_list.lock);
             if (!MPIR_Cont_request_is_active(cont_request_ptr)) {
                 /* The continuation request is inactive. Do not attach yet. */
@@ -215,13 +224,15 @@ void execute_continue(MPIR_Continue *continue_ptr, bool in_cs, int which_cs)
     MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
     /* Signal the continuation request */
     /* TODO: Find a suitable request complete function */
-    int incomplete;
-    MPIR_cc_decr(cont_req_ptr->cc_ptr, &incomplete);
-    if (!incomplete) {
-        /* All the continue callbacks associated with this continuation request have completed */
-        /* TODO: reason about how to invoke the callback for continuation request */
+    if (cont_req_ptr) {
+        int incomplete;
+        MPIR_cc_decr(cont_req_ptr->cc_ptr, &incomplete);
+        if (!incomplete) {
+            /* All the continue callbacks associated with this continuation request have completed */
+            /* TODO: reason about how to invoke the callback for continuation request */
 //        MPIR_Invoke_callback(cont_req_ptr, false);
-        MPIR_Request_free_with_safety(cont_req_ptr, !(in_cs && MPIR_REQUEST_POOL(cont_req_ptr) == which_cs));
+            MPIR_Request_free_with_safety(cont_req_ptr, !(in_cs && MPIR_REQUEST_POOL(cont_req_ptr) == which_cs));
+        }
     }
 }
 
@@ -246,9 +257,7 @@ void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context,
     if (!incomplete) {
         /* All the op requests associated with this continue callback have completed */
         MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
-        if (continue_ptr->is_immediate && !defer_complete) {
-            execute_continue(continue_ptr, in_cs, MPIR_REQUEST_POOL(op_request));
-        } else if (cont_req_ptr->u.cont.is_pool_only) {
+        if (cont_req_ptr && cont_req_ptr->u.cont.is_pool_only) {
             // Pool-only continuation request
             // Push to the continuation request local ready list
             MPID_THREAD_CS_ENTER(VCI, cont_req_ptr->u.cont.ready_poll_only_cont_list.lock);
@@ -256,14 +265,21 @@ void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context,
                       cont_req_ptr->u.cont.ready_poll_only_cont_list.tail,
                       continue_ptr);
             MPID_THREAD_CS_EXIT(VCI, cont_req_ptr->u.cont.ready_poll_only_cont_list.lock);
-        } else {
-            // General-purpose continuation request
-            // Push to the global ready list
+        } else if (defer_complete) {
+            // Deferred completion.
             MPID_THREAD_CS_ENTER(VCI, g_deferred_cont_list.lock);
             LL_APPEND(g_deferred_cont_list.head,
                       g_deferred_cont_list.tail,
                       continue_ptr);
             MPID_THREAD_CS_EXIT(VCI, g_deferred_cont_list.lock);
+        } else if (in_cs && !continue_ptr->is_immediate) {
+            // General-purpose continuation request. We are in a VCI CS
+            // Push to the tls ready list
+            LL_APPEND(tls_deferred_cont_list.head,
+                      tls_deferred_cont_list.tail,
+                      continue_ptr);
+        } else {
+            execute_continue(continue_ptr, in_cs, MPIR_REQUEST_POOL(op_request));
         }
     }
 
@@ -274,27 +290,42 @@ void MPIR_Continue_callback(MPIR_Request *op_request, bool in_cs, void *cb_conte
     complete_op_request(op_request, in_cs, cb_context, false);
 }
 
+int MPIR_Continue_progress_tls()
+{
+    int count = 0;
+    while (tls_deferred_cont_list.head) {
+        /* We have to poll all the things to ensure progress */
+        MPIR_Continue *continue_ptr = tls_deferred_cont_list.head;
+        LL_DELETE(tls_deferred_cont_list.head, tls_deferred_cont_list.tail, continue_ptr);
+        execute_continue(continue_ptr, false, 0 /* Does not matter */);
+        ++count;
+    }
+    return count;
+}
+
 int MPIR_Continue_progress_request(MPIR_Request *cont_request_ptr)
 {
     MPIR_Assert(cont_request_ptr && cont_request_ptr->kind == MPIR_REQUEST_KIND__CONTINUE);
     int count = 0;
-    struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
-    MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
-    /* TODO: use a more efficient way to pop this list */
-    while (cont_request_ptr->u.cont.ready_poll_only_cont_list.head) {
-        MPIR_Continue *continue_ptr = cont_request_ptr->u.cont.ready_poll_only_cont_list.head;
-        LL_DELETE(cont_request_ptr->u.cont.ready_poll_only_cont_list.head,
-                  cont_request_ptr->u.cont.ready_poll_only_cont_list.tail,
-                  continue_ptr);
-        LL_APPEND(local_head, local_tail, continue_ptr);
-        if (cont_request_ptr->u.cont.max_poll && ++count >= cont_request_ptr->u.cont.max_poll)
-            break;
-    }
-    MPID_THREAD_CS_EXIT(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
-    while (local_head) {
-        MPIR_Continue *continue_ptr = local_head;
-        LL_DELETE(local_head, local_tail, continue_ptr);
-        execute_continue(continue_ptr, false, 0 /* Does not matter */);
+    if (cont_request_ptr->u.cont.ready_poll_only_cont_list.head) {
+        struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
+        MPID_THREAD_CS_ENTER(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
+        /* TODO: use a more efficient way to pop this list */
+        while (cont_request_ptr->u.cont.ready_poll_only_cont_list.head) {
+            MPIR_Continue *continue_ptr = cont_request_ptr->u.cont.ready_poll_only_cont_list.head;
+            LL_DELETE(cont_request_ptr->u.cont.ready_poll_only_cont_list.head,
+                      cont_request_ptr->u.cont.ready_poll_only_cont_list.tail,
+                      continue_ptr);
+            LL_APPEND(local_head, local_tail, continue_ptr);
+            if (cont_request_ptr->u.cont.max_poll && ++count >= cont_request_ptr->u.cont.max_poll)
+                break;
+        }
+        MPID_THREAD_CS_EXIT(VCI, cont_request_ptr->u.cont.ready_poll_only_cont_list.lock);
+        while (local_head) {
+            MPIR_Continue *continue_ptr = local_head;
+            LL_DELETE(local_head, local_tail, continue_ptr);
+            execute_continue(continue_ptr, false, 0 /* Does not matter */);
+        }
     }
     return count;
 }
@@ -309,21 +340,23 @@ void MPIR_Continue_progress(MPIR_Request *request)
         max_poll = request->u.cont.max_poll;
     }
     // make progress on the global list
-    struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
-    MPID_THREAD_CS_ENTER(VCI, g_deferred_cont_list.lock);
-    /* TODO: use a more efficient way to pop this list */
-    while ((!max_poll || count < max_poll) && g_deferred_cont_list.head) {
-        MPIR_Continue *continue_ptr = g_deferred_cont_list.head;
-        LL_DELETE(g_deferred_cont_list.head,
-                  g_deferred_cont_list.tail,
-                  continue_ptr);
-        LL_APPEND(local_head, local_tail, continue_ptr);
-        ++count;
-    }
-    MPID_THREAD_CS_EXIT(VCI, g_deferred_cont_list.lock);
-    while (local_head) {
-        MPIR_Continue *continue_ptr = local_head;
-        LL_DELETE(local_head, local_tail, continue_ptr);
-        execute_continue(continue_ptr, false, 0 /* Does not matter */);
+    if (g_deferred_cont_list.head) {
+        struct MPIR_Continue *local_head = NULL, *local_tail = NULL;
+        MPID_THREAD_CS_ENTER(VCI, g_deferred_cont_list.lock);
+        /* TODO: use a more efficient way to pop this list */
+        while ((!max_poll || count < max_poll) && g_deferred_cont_list.head) {
+            MPIR_Continue *continue_ptr = g_deferred_cont_list.head;
+            LL_DELETE(g_deferred_cont_list.head,
+                      g_deferred_cont_list.tail,
+                      continue_ptr);
+            LL_APPEND(local_head, local_tail, continue_ptr);
+            ++count;
+        }
+        MPID_THREAD_CS_EXIT(VCI, g_deferred_cont_list.lock);
+        while (local_head) {
+            MPIR_Continue *continue_ptr = local_head;
+            LL_DELETE(local_head, local_tail, continue_ptr);
+            execute_continue(continue_ptr, false, 0 /* Does not matter */);
+        }
     }
 }
