@@ -16,14 +16,6 @@ struct MPIR_Continue {
 };
 typedef struct MPIR_Continue MPIR_Continue;
 
-#define MPIR_CONTINUE_PREALLOC 8
-MPIR_Continue MPIR_Continue_direct[MPIR_CONTINUE_PREALLOC];
-MPIR_Object_alloc_t MPIR_Continue_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNAL,
-                                        sizeof(MPIR_Continue), MPIR_Continue_direct,
-                                        MPIR_CONTINUE_PREALLOC,
-                                        NULL, {0}
-};
-
 /* Continue context object: carrying data for each op request */
 struct MPIR_Continue_context {
     struct MPIR_Continue* continue_ptr;
@@ -33,14 +25,6 @@ struct MPIR_Continue_context {
     MPIR_Request *op_request;
 };
 typedef struct MPIR_Continue_context MPIR_Continue_context;
-
-#define MPIR_REQUEST_INTERNAL_CONTEXT_PREALLOC 8
-MPIR_Continue_context MPIR_Continue_context_direct[MPIR_REQUEST_INTERNAL_CONTEXT_PREALLOC];
-MPIR_Object_alloc_t MPIR_Continue_context_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNAL,
-                                          sizeof(MPIR_Continue_context), MPIR_Continue_context_direct,
-                                          MPIR_REQUEST_INTERNAL_CONTEXT_PREALLOC,
-                                          NULL, {0}
-};
 
 struct {
     struct MPIR_Continue *head, *tail;
@@ -174,7 +158,7 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
     /* Set various condition variables */
     bool defer_complete = flags & MPIX_CONT_DEFER_COMPLETE;
     /* Create the continue object for every continue callback */
-    MPIR_Continue *continue_ptr = (MPIR_Continue *) MPIR_Handle_obj_alloc(&MPIR_Continue_mem);
+    MPIR_Continue *continue_ptr = (MPIR_Continue *) MPL_malloc(sizeof(MPIR_Continue), MPL_MEM_OTHER);
     continue_ptr->cont_req = cont_request_ptr;
     continue_ptr->cb = cb;
     continue_ptr->cb_data = cb_data;
@@ -186,7 +170,7 @@ int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
         
     for (int i = 0; i < count; i++) {
         /* Create the continue context object for every op request */
-        MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) MPIR_Handle_obj_alloc(&MPIR_Continue_context_mem);
+        MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) MPL_malloc(sizeof(MPIR_Continue_context), MPL_MEM_OTHER);
         context_ptr->continue_ptr = continue_ptr;
         MPIR_Assert(MPI_STATUS_IGNORE == MPI_STATUSES_IGNORE);
         if (array_of_statuses != MPI_STATUS_IGNORE) {
@@ -221,7 +205,7 @@ void execute_continue(MPIR_Continue *continue_ptr, bool in_cs, int which_cs)
     MPIR_Request *cont_req_ptr = continue_ptr->cont_req;
     /* Invoke the continue callback */
     continue_ptr->cb(MPI_SUCCESS, continue_ptr->cb_data);
-    MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
+    MPL_free(continue_ptr);
     /* Signal the continuation request */
     /* TODO: Find a suitable request complete function */
     if (cont_req_ptr) {
@@ -250,7 +234,7 @@ void complete_op_request(MPIR_Request *op_request, bool in_cs, void *cb_context,
     if (!MPIR_Request_is_persistent(op_request)) {
         MPIR_Request_free_with_safety(op_request, !in_cs);
     }
-    MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
+    MPL_free(context_ptr);
     /* Signal the continue callback */
     int incomplete;
     MPIR_cc_decr(&continue_ptr->pending_request_count, &incomplete);
