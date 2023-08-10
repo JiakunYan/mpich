@@ -43,6 +43,7 @@ MPL_STATIC_INLINE_PREFIX int MPIDI_OFI_send_event(int vci,
             MPL_free(MPIDI_OFI_REQUEST(sreq, noncontig.nopack));
 
         MPIR_Datatype_release_if_not_builtin(MPIDI_OFI_REQUEST(sreq, datatype));
+        MPIR_Invoke_callback(sreq, true);
         MPIDI_CH4_REQUEST_FREE(sreq);
     }
     /* c != 0, ssend */
