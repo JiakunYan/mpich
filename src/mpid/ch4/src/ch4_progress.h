@@ -160,10 +160,15 @@ MPL_STATIC_INLINE_PREFIX void MPIDI_progress_state_init(MPID_Progress_state * st
         state->vci_count = 1;
     } else {
         /* global progress by default */
+        // JIAKUN-HACK
         for (int i = 0; i < MPIDI_global.n_total_vcis; i++) {
             state->vci[i] = i;
         }
         state->vci_count = MPIDI_global.n_total_vcis;
+//        for (int i = 0; i < MPIDI_global.n_vcis; i++) {
+//            state->vci[i] = i;
+//        }
+//        state->vci_count = MPIDI_global.n_vcis;
     }
 }
 
