@@ -8,7 +8,6 @@
 struct MPIR_Continue {
     MPIR_Request *cont_req;
     MPIX_Continue_cb_function *cb;
-    MPI_Status *status_ptr;
     void *cb_data;
     MPIR_cc_t pending_request_count;
 };
@@ -25,7 +24,7 @@ MPIR_Object_alloc_t MPIR_Continue_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNAL,
 
 struct MPIR_Continue_context {
     struct MPIR_Continue* continue_ptr;
-    int my_idx;
+    MPI_Status *status_ptr;
 };
 typedef struct MPIR_Continue_context MPIR_Continue_context;
 
@@ -38,14 +37,18 @@ MPIR_Object_alloc_t MPIR_Continue_context_mem = { 0, 0, 0, 0, 0, 0, MPIR_INTERNA
                                           NULL, {0}
 };
 
-void MPIR_Continue_callback(MPIR_Request *ob_request)
+void MPIR_Continue_callback(MPIR_Request *op_request, void *cb_context)
 {
-    MPIR_Continue_context *context_ptr = ob_request->cb_context;
+    MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) cb_context;
     MPIR_Continue *continue_ptr = context_ptr->continue_ptr;
     MPIR_Request *cont_req = continue_ptr->cont_req;
-    /* Fill the status */
-    if (continue_ptr->status_ptr != MPI_STATUS_IGNORE) {
-        continue_ptr->status_ptr[context_ptr->my_idx] = ob_request->status;
+    /* Complete this operation request */
+    int rc = MPIR_Request_completion_processing(
+            op_request, context_ptr->status_ptr);
+    if (context_ptr->status_ptr != MPI_STATUS_IGNORE)
+        context_ptr->status_ptr->MPI_ERROR = rc;
+    if (!MPIR_Request_is_persistent(op_request)) {
+        MPIR_Request_free(op_request);
     }
     MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
     /* Signal the continue callback */
@@ -54,90 +57,73 @@ void MPIR_Continue_callback(MPIR_Request *ob_request)
     if (!incomplete) {
         /* All the op requests associated with this continue callback have completed */
         /* Invoke the continue callback */
-        continue_ptr->cb(continue_ptr->status_ptr, continue_ptr->cb_data);
+        continue_ptr->cb(MPI_SUCCESS, continue_ptr->cb_data);
         MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
         /* Signal the continuation request */
         MPIR_cc_decr(cont_req->cc_ptr, &incomplete);
         if (!incomplete) {
             /* All the continue callbacks associated with this continuation request have completed */
-            /* TODO: Fine-tune the thread safety level. */
+//            MPIR_Invoke_callback_safe(cont_req);
             MPIR_Request_free_safe(cont_req);
         }
     }
 }
 
-int MPIR_Continue_init_impl(MPIR_Request **cont_req_ptr,
-                            MPIR_Info *info_ptr)
+int MPIR_Persist_continue_start(MPIR_Request * request)
 {
-    *cont_req_ptr = MPIR_Request_create(MPIR_REQUEST_KIND__CONTINUE);
+//    MPIR_Request_add_ref(request);
+//    MPIR_Cont_request_activate(request);
     return MPI_SUCCESS;
 }
 
-int MPIR_Continue_impl(MPIR_Request *op_request_ptr, int *flag,
+int MPIR_Continue_init_impl(int flags, int max_poll,
+                            MPIR_Info *info_ptr,
+                            MPIR_Request **cont_req_ptr)
+{
+    *cont_req_ptr = MPIR_Request_create(MPIR_REQUEST_KIND__PREQUEST_CONTINUE);
+    /* We use cc to track how many continue object has been attached to this continuation request. */
+    MPIR_cc_set(&(*cont_req_ptr)->cc, 0);
+    return MPI_SUCCESS;
+}
+
+int MPIR_Continue_impl(MPIR_Request *op_request_ptr,
                        MPIX_Continue_cb_function *cb, void *cb_data,
-                       MPI_Status *status, MPIR_Request *cont_request_ptr)
+                       int flags, MPI_Status *status,
+                       MPIR_Request *cont_request_ptr)
 {
-    MPIR_Continue *continue_ptr = (MPIR_Continue *) MPIR_Handle_obj_alloc(&MPIR_Continue_mem);
-    continue_ptr->cont_req = cont_request_ptr;
-    continue_ptr->cb = cb;
-    continue_ptr->status_ptr = status;
-    continue_ptr->cb_data = cb_data;
-    MPIR_cc_set(&continue_ptr->pending_request_count, 1);
-    MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) MPIR_Handle_obj_alloc(&MPIR_Continue_context_mem);
-    context_ptr->continue_ptr = continue_ptr;
-    context_ptr->my_idx = 0;
-    if (!MPIR_Set_callback_safe(op_request_ptr, MPIR_Continue_callback, context_ptr)) {
-        /* the request has already completed. */
-        MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
-        MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
-        /* TODO: do we return the error code via return value or status? */
-        if (status != MPI_STATUS_IGNORE) {
-            *status = op_request_ptr->status;
-        }
-        *flag = 1;
-    } else {
-        *flag = 0;
-    }
-    return MPI_SUCCESS;
+    return MPIR_Continueall_impl(1, &op_request_ptr, cb, cb_data, flags, status, cont_request_ptr);
 }
 
-int MPIR_Continueall_impl(int count, MPI_Request op_requests[],
-                          int *flag, MPIX_Continue_cb_function *cb,
-                          void *cb_data, MPI_Status *statuses,
-                          MPIR_Request *cont_request_ptr)
+int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
+                          MPIX_Continue_cb_function *cb, void *cb_data, int flags,
+                          MPI_Status *array_of_statuses, MPIR_Request *cont_request_ptr)
 {
+    /* Add one continue to the continuation request */
+    int was_incompleted;
+    MPIR_cc_incr(cont_request_ptr->cc_ptr, &was_incompleted);
+    if (!was_incompleted) {
+        MPIR_Request_add_ref(cont_request_ptr);
+        MPIR_Cont_request_activate(cont_request_ptr);
+    }
+    /* Create the continue object */
     MPIR_Continue *continue_ptr = (MPIR_Continue *) MPIR_Handle_obj_alloc(&MPIR_Continue_mem);
     continue_ptr->cont_req = cont_request_ptr;
     continue_ptr->cb = cb;
-    continue_ptr->status_ptr = statuses;
     continue_ptr->cb_data = cb_data;
     MPIR_cc_set(&continue_ptr->pending_request_count, count);
-    int completed_request = 0;
     for (int i = 0; i < count; i++) {
         MPIR_Continue_context *context_ptr = (MPIR_Continue_context *) MPIR_Handle_obj_alloc(&MPIR_Continue_context_mem);
         context_ptr->continue_ptr = continue_ptr;
-        context_ptr->my_idx = i;
-        MPIR_Request *op_request_ptr;
-        MPIR_Request_get_ptr(op_requests[i], op_request_ptr);
-        if (!MPIR_Set_callback_safe(op_request_ptr, MPIR_Continue_callback, context_ptr)) {
-            MPIR_Handle_obj_free(&MPIR_Continue_context_mem, context_ptr);
-            ++completed_request;
+        MPIR_Assert(MPI_STATUS_IGNORE == MPI_STATUSES_IGNORE);
+        if (array_of_statuses != MPI_STATUS_IGNORE) {
+            context_ptr->status_ptr = &array_of_statuses[i];
+        } else {
+            context_ptr->status_ptr = MPI_STATUS_IGNORE;
         }
-    }
-    if (completed_request == count) {
-        /* All requests have been completed. The callback will not be invoked. */
-        MPIR_Handle_obj_free(&MPIR_Continue_mem, continue_ptr);
-        /* TODO: do we return the error code via return value or status? */
-        if (statuses != MPI_STATUSES_IGNORE) {
-            for (int i = 0; i < count; i++) {
-                MPIR_Request *op_request_ptr;
-                MPIR_Request_get_ptr(op_requests[i], op_request_ptr);
-                statuses[i] = op_request_ptr->status;
-            }
+        if (!MPIR_Set_callback_safe(request_ptrs[i], MPIR_Continue_callback, context_ptr)) {
+            /* the request has already completed. */
+            MPIR_Continue_callback(request_ptrs[i], context_ptr);
         }
-        *flag = 1;
-    } else {
-        *flag = 0;
     }
     return MPI_SUCCESS;
 }

@@ -168,6 +168,8 @@ int MPIR_Request_free_impl(MPIR_Request * request_ptr)
         case MPIR_REQUEST_KIND__PART_RECV:
             MPID_Part_request_free_hook(request_ptr);
             break;
+        case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+            break;
         default:
             mpi_errno = MPIR_Err_create_code(MPI_SUCCESS, MPIR_ERR_RECOVERABLE,
                                              __func__, __LINE__, MPI_ERR_OTHER,

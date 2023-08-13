@@ -81,6 +81,7 @@ MPL_STATIC_INLINE_PREFIX int MPID_Request_complete(MPIR_Request * req)
     /* if we hit a zero completion count, free up AM-related
      * objects */
     if (!incomplete) {
+        MPIR_Invoke_callback_safe(req);
         if (req->dev.completion_notification) {
             MPIR_cc_dec(req->dev.completion_notification);
         }
@@ -108,6 +109,7 @@ MPL_STATIC_INLINE_PREFIX void MPIDI_Request_complete_fast(MPIR_Request * req)
     int incomplete;
     MPIR_cc_decr(req->cc_ptr, &incomplete);
     if (!incomplete) {
+        MPIR_Invoke_callback_safe(req);
         MPIDI_CH4_REQUEST_FREE(req);
     }
 }

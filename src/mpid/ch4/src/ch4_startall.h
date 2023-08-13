@@ -104,6 +104,10 @@ MPL_STATIC_INLINE_PREFIX int MPID_Startall(int count, MPIR_Request * requests[])
                 mpi_errno = MPIDI_part_start(preq);
                 break;
 
+            case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+                mpi_errno = MPIR_Persist_continue_start(preq);
+                break;
+
             default:
                 mpi_errno = MPIR_Err_create_code(MPI_SUCCESS, MPIR_ERR_FATAL, __FUNCTION__,
                                                  __LINE__, MPI_ERR_INTERN, "**ch4|badstartreq",

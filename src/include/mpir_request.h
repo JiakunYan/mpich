@@ -70,7 +70,7 @@ typedef enum MPIR_Request_kind_t {
     MPIR_REQUEST_KIND__COLL,
     MPIR_REQUEST_KIND__MPROBE,  /* see NOTE-R1 */
     MPIR_REQUEST_KIND__RMA,
-    MPIR_REQUEST_KIND__CONTINUE,
+    MPIR_REQUEST_KIND__PREQUEST_CONTINUE,
     MPIR_REQUEST_KIND__LAST
 #ifdef MPID_REQUEST_KIND_DECL
         , MPID_REQUEST_KIND_DECL
@@ -96,7 +96,7 @@ typedef void (MPIR_Grequest_f77_free_function) (void *, MPI_Fint *);
 typedef void (MPIR_Grequest_f77_query_function) (void *, MPI_Fint *, MPI_Fint *);
 
 /* Typedefs for request callback */
-typedef void (MPIR_Request_callback_function) (MPIR_Request *);
+typedef void (MPIR_Request_callback_function) (MPIR_Request *, void *);
 #define MPIR_REQUEST_CALLBACK_NULL 0
 #define MPIR_REQUEST_CALLBACK_SET 1
 #define MPIR_REQUEST_CALLBACK_DONE 2
@@ -252,6 +252,10 @@ struct MPIR_Request {
         struct {
             MPIR_Win *win;
         } rma;                  /* kind : MPIR_REQUEST_KIND__RMA */
+        struct {
+            MPL_atomic_int_t active_flag;       /* flag indicating whether in a start-complete active period.
+                                                 * Value is 0 or 1. */
+        } cont;
         /* Reserve space for local usages. For example, threadcomm, the actual struct
          * is defined locally and is used via casting */
         char dummy[MPIR_REQUEST_UNION_SIZE];
@@ -272,6 +276,7 @@ struct MPIR_Request {
 };
 int MPIR_Persist_coll_start(MPIR_Request * request);
 void MPIR_Persist_coll_free_cb(MPIR_Request * request);
+int MPIR_Persist_continue_start(MPIR_Request * request);
 
 /* Multiple Request Pools
  * Request objects creation and freeing is in a hot path. Multiple pools allow different
@@ -350,7 +355,8 @@ static inline int MPIR_Request_is_persistent(MPIR_Request * req_ptr)
             req_ptr->kind == MPIR_REQUEST_KIND__PREQUEST_RECV ||
             req_ptr->kind == MPIR_REQUEST_KIND__PREQUEST_COLL ||
             req_ptr->kind == MPIR_REQUEST_KIND__PART_SEND ||
-            req_ptr->kind == MPIR_REQUEST_KIND__PART_RECV);
+            req_ptr->kind == MPIR_REQUEST_KIND__PART_RECV ||
+            req_ptr->kind == MPIR_REQUEST_KIND__PREQUEST_CONTINUE);
 }
 
 static inline int MPIR_Part_request_is_active(MPIR_Request * req_ptr)
@@ -366,6 +372,21 @@ static inline void MPIR_Part_request_inactivate(MPIR_Request * req_ptr)
 static inline void MPIR_Part_request_activate(MPIR_Request * req_ptr)
 {
     MPL_atomic_store_int(&req_ptr->u.part.active_flag, 1);
+}
+
+static inline int MPIR_Cont_request_is_active(MPIR_Request * req_ptr)
+{
+    return MPL_atomic_load_int(&req_ptr->u.cont.active_flag);
+}
+
+static inline void MPIR_Cont_request_inactivate(MPIR_Request * req_ptr)
+{
+    MPL_atomic_store_int(&req_ptr->u.cont.active_flag, 0);
+}
+
+static inline void MPIR_Cont_request_activate(MPIR_Request * req_ptr)
+{
+    MPL_atomic_store_int(&req_ptr->u.cont.active_flag, 1);
 }
 
 /* Return whether a request is active.
@@ -386,6 +407,8 @@ static inline int MPIR_Request_is_active(MPIR_Request * req_ptr)
             case MPIR_REQUEST_KIND__PART_SEND:
             case MPIR_REQUEST_KIND__PART_RECV:
                 return MPIR_Part_request_is_active(req_ptr);
+            case MPIR_REQUEST_KIND__PREQUEST_CONTINUE:
+                return MPIR_Cont_request_is_active(req_ptr);
             default:
                 return 1;       /* regular request is always active */
         }
@@ -545,7 +568,6 @@ static inline void MPIR_Request_free_with_safety(MPIR_Request * req, int need_sa
     /* inform the device that we are decrementing the ref-count on
      * this request */
     MPID_Request_free_hook(req);
-    MPIR_Invoke_callback_unsafe(req);
 
     if (inuse == 0) {
         MPL_DBG_MSG_P(MPIR_DBG_REQUEST, VERBOSE, "freeing request, handle=0x%08x", req->handle);
@@ -649,7 +671,8 @@ MPL_STATIC_INLINE_PREFIX bool MPIR_Set_callback_safe(MPIR_Request * req,
 MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_unsafe(MPIR_Request * req)
 {
     if (req->cb) {
-        req->cb(req);
+        req->cb(req, req->cb_context);
+        req->cb = NULL;
     }
     /* This store maybe not necessary. */
     MPL_atomic_relaxed_store_int(&req->cb_state, MPIR_REQUEST_CALLBACK_DONE);
@@ -683,6 +706,7 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback_safe(MPIR_Request * req)
 MPL_STATIC_INLINE_PREFIX void MPIR_Request_complete(MPIR_Request * req)
 {
     MPIR_cc_set(&req->cc, 0);
+    MPIR_Invoke_callback_safe(req);
     MPIR_Request_free(req);
 }
 
@@ -825,5 +849,8 @@ int MPIR_Waitany(int count, MPI_Request array_of_requests[], MPIR_Request * requ
 int MPIR_Waitsome(int incount, MPI_Request array_of_requests[], MPIR_Request * request_ptrs[],
                   int *outcount, int array_of_indices[], MPI_Status array_of_statuses[]);
 int MPIR_Parrived(MPIR_Request * request_ptr, int partition, int *flag);
+int MPIR_Continueall_impl(int count, MPIR_Request *request_ptrs[],
+                          MPIX_Continue_cb_function *cb, void *cb_data, int flags,
+                          MPI_Status *array_of_statuses, MPIR_Request *cont_request_ptr);
 
 #endif /* MPIR_REQUEST_H_INCLUDED */

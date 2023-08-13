@@ -64,6 +64,13 @@ int MPID_Startall(int count, MPIR_Request * requests[])
             continue;
         }
 
+        if (preq->kind == MPIR_REQUEST_KIND__PREQUEST_CONTINUE) {
+            mpi_errno = MPIR_Persist_continue_start(preq);
+            MPIR_ERR_CHECK(mpi_errno);
+            continue;
+        }
+
+
 	/* FIXME: The odd 7th arg (match.context_id - comm->context_id) 
 	   is probably to get the context offset.  Do we really need the
 	   context offset? Is there any case where the offset isn't zero? */

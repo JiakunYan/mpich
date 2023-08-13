@@ -544,7 +544,7 @@ def process_func_parameters(func):
                 if p['length']:
                     length = p['length']
                     if length == '*':
-                        if RE.match(r'MPI_(Test|Wait)all', func_name, re.IGNORECASE):
+                        if RE.match(r'MPIX?_(Test|Wait|Continue)all', func_name, re.IGNORECASE):
                             length = "count"
                         elif RE.match(r'MPI_(Test|Wait)some', func_name, re.IGNORECASE):
                             length = "incount"
@@ -569,7 +569,7 @@ def process_func_parameters(func):
             if kind == "REQUEST":
                 if RE.match(r'mpi_startall', func_name, re.IGNORECASE):
                     do_handle_ptr = 3
-                elif RE.match(r'mpix?_(wait|test)', func_name, re.IGNORECASE):
+                elif RE.match(r'mpix?_(wait|test|continue)', func_name, re.IGNORECASE):
                     do_handle_ptr = 3
             elif kind == "RANK":
                 validation_list.append({'kind': "RANK-ARRAY", 'name': name})
@@ -704,7 +704,6 @@ def process_func_parameters(func):
             validation_list.append({'kind': "ARGNULL", 'name': name})
         else:
             print("Missing error checking: func=%s, name=%s, kind=%s" % (func_name, name, kind), file=sys.stderr)
-
         if do_handle_ptr == 1:
             if p['param_direction'] == 'inout':
                 # assume only one such parameter
@@ -726,7 +725,7 @@ def process_func_parameters(func):
             if kind == "REQUEST":
                 ptrs_name = "request_ptrs"
                 p['_ptrs_name'] = ptrs_name
-                if RE.match(r'mpi_startall', func['name'], re.IGNORECASE):
+                if RE.match(r'mpix?_(start|continue)all', func['name'], re.IGNORECASE):
                     impl_arg_list.append(ptrs_name)
                     impl_param_list.append("MPIR_Request **%s" % ptrs_name)
                 else:
