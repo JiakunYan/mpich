@@ -192,6 +192,9 @@ int MPIR_pmi_init(void)
                mpi_errno = pmi2_init(&has_parent, &rank, &size, &appnum),
                mpi_errno = pmix_init(&has_parent, &rank, &size, &appnum));
     MPIR_ERR_CHECK(mpi_errno);
+    // JIAKUN-HACK
+    MPL_env2int("PMI_MAX_KEY_SIZE", &pmi_max_key_size);
+    MPL_env2int("PMI_MAX_VAL_SIZE", &pmi_max_val_size);
 
     unsigned world_id = 0;
     if (pmi_kvs_name) {
