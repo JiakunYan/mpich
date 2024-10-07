@@ -740,7 +740,6 @@ MPL_STATIC_INLINE_PREFIX void MPIR_Invoke_callback(MPIR_Request * req, bool in_c
     if (!req->cbs.head) {
         return;
     }
-    /* All the callbacks should be invoked without vci lock. */
     while (req->cbs.head) {
         struct MPIR_Request_cb_t *cb = req->cbs.head;
         cb->fn(req, in_cs, cb->arg);

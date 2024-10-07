@@ -26,9 +26,14 @@ MPL_STATIC_INLINE_PREFIX void MPIDI_set_progress_vci_n(int n, MPIR_Request ** re
 
     int idx = 0;
     for (int i = 0; i < n; i++) {
-        if (!MPIR_Request_is_active(reqs[i])) {
+        // JIAKUN-HACK
+        if (HANDLE_IS_BUILTIN(reqs[i]->handle) ||
+            !MPIR_Request_is_active(reqs[i]) || MPIR_Request_is_complete(reqs[i])) {
             continue;
         }
+//        if (!MPIR_Request_is_active(reqs[i])) {
+//            continue;
+//        }
 
         if (HANDLE_IS_BUILTIN(reqs[i]->handle) || MPIR_Request_is_complete(reqs[i])) {
             continue;
