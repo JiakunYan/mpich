@@ -143,6 +143,7 @@ MPL_STATIC_INLINE_PREFIX int MPIDI_progress_test(MPID_Progress_state * state)
         }
     }
 #endif
+    MPIR_Continue_progress_tls();
 
   fn_exit:
     MPIR_FUNC_EXIT;

@@ -227,6 +227,8 @@ int MPIR_Request_free_impl(MPIR_Request * request_ptr)
                 MPIR_Request_free(request_ptr->u.persist_coll.real_request);
             }
             break;
+        case MPIR_REQUEST_KIND__CONTINUE:
+            break;
         default:
             break;
     }
@@ -245,6 +247,7 @@ int MPIR_Test_state(MPIR_Request * request_ptr, int *flag, MPI_Status * status,
     if (!MPIR_Request_is_complete(request_ptr)) {
         mpi_errno = MPID_Progress_test(state);
         MPIR_ERR_CHECK(mpi_errno);
+        MPIR_Continue_progress(request_ptr);
     }
 
   fn_exit:
@@ -304,6 +307,7 @@ int MPIR_Testall_state(int count, MPIR_Request * request_ptrs[], int *flag,
     n_completed = 0;
     if (requests_property & MPIR_REQUESTS_PROPERTY__NO_GREQUESTS) {
         for (int i = 0; i < count; i++) {
+            MPIR_Continue_progress(request_ptrs[i]);
             if (request_ptrs[i] == NULL || MPIR_Request_is_complete(request_ptrs[i])) {
                 n_completed++;
             } else {
@@ -312,6 +316,7 @@ int MPIR_Testall_state(int count, MPIR_Request * request_ptrs[], int *flag,
         }
     } else {
         for (int i = 0; i < count; i++) {
+            MPIR_Continue_progress(request_ptrs[i]);
             if (request_ptrs[i] != NULL) {
                 if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
                     mpi_errno = MPIR_Grequest_poll(request_ptrs[i], &array_of_statuses[i]);
@@ -494,9 +499,12 @@ int MPIR_Testany_state(int count, MPIR_Request * request_ptrs[],
 
   fn_check_requests:
     for (int i = 0; i < count; i++) {
+        MPIR_Continue_progress(request_ptrs[i]);
+
         if (!request_ptrs[i]) {
             continue;
         }
+
         if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
             mpi_errno = MPIR_Grequest_poll(request_ptrs[i], status);
             MPIR_ERR_CHECK(mpi_errno);
@@ -620,9 +628,12 @@ int MPIR_Testsome_state(int incount, MPIR_Request * request_ptrs[],
     *outcount = 0;
 
     for (i = 0; i < incount; i++) {
+        MPIR_Continue_progress(request_ptrs[i]);
+
         if (!request_ptrs[i]) {
             continue;
         }
+
         if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
             mpi_errno = MPIR_Grequest_poll(request_ptrs[i], &array_of_statuses[i]);
             MPIR_ERR_CHECK(mpi_errno);
@@ -739,6 +750,8 @@ int MPIR_Wait_state(MPIR_Request * request_ptr, MPI_Status * status, MPID_Progre
     while (!MPIR_Request_is_complete(request_ptr)) {
         mpi_errno = MPID_Progress_wait(state);
         MPIR_ERR_CHECK(mpi_errno);
+
+        MPIR_Continue_progress(request_ptr);
         PROGRESS_CHECK;
 
         if (unlikely(MPIR_Request_is_anysrc_mismatched(request_ptr))) {
@@ -806,6 +819,7 @@ int MPIR_Waitall_state(int count, MPIR_Request * request_ptrs[], MPI_Status arra
             while (!MPIR_Request_is_complete(request_ptrs[i])) {
                 mpi_errno = MPID_Progress_wait(state);
                 MPIR_ERR_CHECK(mpi_errno);
+                MPIR_Continue_progress(request_ptrs[i]);
                 PROGRESS_CHECK;
             }
         }
@@ -821,6 +835,7 @@ int MPIR_Waitall_state(int count, MPIR_Request * request_ptrs[], MPI_Status arra
 
                 mpi_errno = MPID_Progress_wait(state);
                 MPIR_ERR_CHECK(mpi_errno);
+                MPIR_Continue_progress(request_ptrs[i]);
                 PROGRESS_CHECK;
             }
         }
@@ -1008,6 +1023,8 @@ int MPIR_Waitany_state(int count, MPIR_Request * request_ptrs[], int *indx, MPI_
                 continue;
             }
 
+            MPIR_Continue_progress(request_ptrs[i]);
+
             if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
                 mpi_errno = MPIR_Grequest_poll(request_ptrs[i], status);
                 MPIR_ERR_CHECK(mpi_errno);
@@ -1137,6 +1154,7 @@ int MPIR_Waitsome_state(int incount, MPIR_Request * request_ptrs[],
                 MPIR_ERR_CHECK(mpi_errno);
             }
 
+            MPIR_Continue_progress(request_ptrs[i]);
             if (request_ptrs[i] != NULL) {
                 if (MPIR_Request_has_poll_fn(request_ptrs[i])) {
                     mpi_errno = MPIR_Grequest_poll(request_ptrs[i], &array_of_statuses[i]);
