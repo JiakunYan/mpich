@@ -570,7 +570,7 @@ def process_func_parameters(func):
                 if p['length']:
                     length = p['length']
                     if length == '*':
-                        if RE.match(r'MPI_(Test|Wait|Request_get_status_|Continue)all', func_name, re.IGNORECASE):
+                        if RE.match(r'MPIX?_(Test|Wait|Request_get_status_|Continue)all', func_name, re.IGNORECASE):
                             length = "count"
                         elif RE.match(r'MPI_(Test|Wait|Request_get_status_)some', func_name, re.IGNORECASE):
                             length = "incount"

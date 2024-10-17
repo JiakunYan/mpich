@@ -30,7 +30,7 @@ MPIX_Continueall:
     cb: FUNCTION, func_type=MPIX_Continue_cb_function, [the continuation callback function]
     cb_data: BUFFER, [the argument passed to the callback]
     flags: ARRAY_LENGTH, [flags controlling aspects of the continuation]
-    array_of_statuses: STATUS, direction=inout, length=*, pointer=False, [array of status objects]
+    array_of_statuses: STATUS, direction=out, length=*, pointer=False, [array of status objects]
     cont_request: REQUEST, [the continuation request]
 {
     mpi_errno = MPIR_Continueall_impl(count, request_ptrs, cb, cb_data, flags, array_of_statuses,
